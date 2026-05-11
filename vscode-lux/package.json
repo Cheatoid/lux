@@ -4,6 +4,22 @@
   "description": "Language support for the Lux typed Lua transpiler",
   "version": "0.1.0",
   "publisher": "DasDarki",
+  "license": "MIT",
+  "homepage": "https://github.com/LuaLux/lux#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/LuaLux/lux.git"
+  },
+  "bugs": {
+    "url": "https://github.com/LuaLux/lux/issues"
+  },
+  "keywords": [
+    "lux",
+    "lua",
+    "luajit",
+    "transpiler",
+    "type-checker"
+  ],
   "engines": {
     "vscode": "^1.75.0"
   },
