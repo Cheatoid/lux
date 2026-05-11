@@ -324,6 +324,11 @@ public enum DiagnosticCode
     [Format("Duplicate type parameter '{0}'")]
     ErrDuplicateTypeParam = 0x4028,
 
+    [Level(DiagnosticLevel.Error)]
+    [Category(DiagnosticCategory.Semantic)]
+    [Format("Instance method '{0}' on class '{1}' must be called with ':' (try `{2}:{0}(...)`); '.' would not pass the receiver as self")]
+    ErrInstanceMethodNeedsColon = 0x4029,
+
     #endregion
 
     #region Annotations

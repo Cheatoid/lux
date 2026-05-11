@@ -100,6 +100,21 @@ class Service
 end
 ```
 
+> **Instance methods carry an implicit `self`.** Lux models every non-static
+> class method as if its first parameter were `self: ThisClass`, even though
+> you don't write it. That mirrors Lua's runtime: `obj:method(args)` desugars
+> to `obj.method(obj, args)`, and Lux's codegen emits exactly that. Two
+> practical consequences:
+>
+> - Instance methods must be called with **`obj:method(args)`** (colon).
+>   Writing `obj.method(args)` is rejected with `ErrInstanceMethodNeedsColon`
+>   because `.` would leave `self` as `nil` at runtime.
+> - Static methods are stored separately and dispatched via **`Class.method(args)`**
+>   (dot). Calling them with a colon is a type error.
+>
+> Interface methods are different — see the alert in the [Interfaces](./10-interfaces.md)
+> doc.
+
 ## Inheritance
 
 ```lux

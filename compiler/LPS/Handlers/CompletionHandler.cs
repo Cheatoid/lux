@@ -281,7 +281,7 @@ public sealed class CompletionHandler(LuxWorkspace workspace) : CompletionHandle
         while (i > 0 && (char.IsLetterOrDigit(lineText[i - 1]) || lineText[i - 1] == '_')) i--;
         var nameStart = i;
 
-        if (i <= 0 || lineText[i - 1] != '.') return null;
+        if (i <= 0 || (lineText[i - 1] != '.' && lineText[i - 1] != ':')) return null;
         i--;
         if (i > 0 && lineText[i - 1] == '?') i--;
 
@@ -293,7 +293,7 @@ public sealed class CompletionHandler(LuxWorkspace workspace) : CompletionHandle
             while (j > 0 && (char.IsLetterOrDigit(lineText[j - 1]) || lineText[j - 1] == '_')) j--;
             if (j == segEnd) return null;
 
-            if (j > 0 && lineText[j - 1] == '.')
+            if (j > 0 && (lineText[j - 1] == '.' || lineText[j - 1] == ':'))
             {
                 j--;
                 if (j > 0 && lineText[j - 1] == '?') j--;
@@ -318,7 +318,7 @@ public sealed class CompletionHandler(LuxWorkspace workspace) : CompletionHandle
                     optional = true;
                     k += 2;
                 }
-                else if (chainText[k] == '.')
+                else if (chainText[k] == '.' || chainText[k] == ':')
                 {
                     k++;
                 }
@@ -350,10 +350,40 @@ public sealed class CompletionHandler(LuxWorkspace workspace) : CompletionHandle
         {
             currentTypeId = StripNil(result.Types, currentTypeId);
             if (!result.Types.GetByID(currentTypeId, out var t)) return null;
-            if (t is not StructType st) return null;
-            var field = st.Fields.FirstOrDefault(f => f.Name.Name == segments[s].Name);
-            if (field == null) return null;
-            currentTypeId = field.Type.ID;
+            switch (t)
+            {
+                case StructType st:
+                {
+                    var field = st.Fields.FirstOrDefault(f => f.Name.Name == segments[s].Name);
+                    if (field == null) return null;
+                    currentTypeId = field.Type.ID;
+                    break;
+                }
+                case ClassType ct:
+                {
+                    if (ct.InstanceFields.TryGetValue(segments[s].Name, out var f))
+                        currentTypeId = f.Type.ID;
+                    else if (ct.Methods.TryGetValue(segments[s].Name, out var m))
+                        currentTypeId = m.ID;
+                    else if (ct.Getters.TryGetValue(segments[s].Name, out var g))
+                        currentTypeId = g.ReturnType.ID;
+                    else if (ct.StaticMethods.TryGetValue(segments[s].Name, out var sm))
+                        currentTypeId = sm.ID;
+                    else return null;
+                    break;
+                }
+                case InterfaceType it:
+                {
+                    if (it.Fields.TryGetValue(segments[s].Name, out var f))
+                        currentTypeId = f.Type.ID;
+                    else if (it.Methods.TryGetValue(segments[s].Name, out var m))
+                        currentTypeId = m.ID;
+                    else return null;
+                    break;
+                }
+                default:
+                    return null;
+            }
         }
 
         var finalTypeId = StripNil(result.Types, currentTypeId);
@@ -373,6 +403,39 @@ public sealed class CompletionHandler(LuxWorkspace workspace) : CompletionHandle
             }
 
             return items;
+        }
+
+        if (finalType is InterfaceType ifaceType)
+        {
+            var ifaceItems = new List<CompletionItem>();
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            void Walk(InterfaceType it)
+            {
+                foreach (var (name, field) in it.Fields)
+                {
+                    if (!seen.Add(name)) continue;
+                    ifaceItems.Add(new CompletionItem
+                    {
+                        Label = name,
+                        Kind = CompletionItemKind.Field,
+                        Detail = workspace.FormatType(result.Types, field.Type.ID)
+                    });
+                }
+                foreach (var (name, method) in it.Methods)
+                {
+                    if (name.StartsWith("__")) continue;
+                    if (!seen.Add(name)) continue;
+                    ifaceItems.Add(new CompletionItem
+                    {
+                        Label = name,
+                        Kind = CompletionItemKind.Method,
+                        Detail = workspace.FormatType(result.Types, method.ID)
+                    });
+                }
+                foreach (var bi in it.BaseInterfaces) Walk(bi);
+            }
+            Walk(ifaceType);
+            return ifaceItems;
         }
 
         if (finalType is ClassType classType)
@@ -686,7 +749,7 @@ public sealed class CompletionHandler(LuxWorkspace workspace) : CompletionHandle
         return new CompletionRegistrationOptions
         {
             DocumentSelector = TextDocumentSelector.ForLanguage("lux"),
-            TriggerCharacters = new Container<string>(".", "?", "/", "\"", "'", " ", "@"),
+            TriggerCharacters = new Container<string>(".", ":", "?", "/", "\"", "'", " ", "@"),
             ResolveProvider = false
         };
     }

@@ -9,10 +9,18 @@ namespace Lux.Compiler.Passes;
 /// The infer types pass is responsible for inferring the types of expressions in the source code. It takes care of
 /// inferring the types of variables, function return types, and other expressions based on their usage and context.
 /// </summary>
-public sealed class InferTypesPass() : Pass(PassName, PassScope.PerFile)
+public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
 {
     public const string PassName = "InferTypes";
     private int _asyncDepth;
+
+    /// <summary>
+    /// Tracks class/interface decl nodes we've already resolved so the
+    /// pre-phase pass and the regular per-file walk don't duplicate work
+    /// (and don't double-report diagnostics on method bodies).
+    /// </summary>
+    private readonly HashSet<NodeID> _resolvedClassDecls = [];
+    private readonly HashSet<NodeID> _resolvedInterfaceDecls = [];
 
     /// <summary>
     /// Identifies a value location for flow-narrowing. Either a plain symbol (NameExpr) or a chain of
@@ -38,21 +46,95 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerFile)
 
     public override bool Run(PassContext context)
     {
-        if (context.Pkg == null || context.File == null)
+        // Phase 1: walk every file in every package and resolve only class +
+        // interface decls. This populates Methods/StaticMethods/Getters/
+        // Setters/InstanceFields/ConstructorType across the whole build so
+        // that expression-level type checks in Phase 2 see fully-built
+        // structures regardless of file order. Without this, e.g. an
+        // installed types-only package whose .d.lux is processed AFTER a
+        // consumer's source file would leave Entity.Methods empty when
+        // `Entity.Subscribe(...)` is checked → falls through to `any`.
+        foreach (var pkg in context.Pkgs)
         {
-            return false;
+            foreach (var file in pkg.Files)
+            {
+                var fileCtx = MakeFileContext(context, pkg, file);
+                _narrowed.Clear();
+                ResolveTypeUniverseDecls(fileCtx, file.Hir.Body);
+            }
         }
 
-        _narrowed.Clear();
-
-        ResolveStmts(context, context.File.Hir.Body);
-
-        if (context.File.Hir.Return != null)
+        // Phase 2: normal per-file walk. Class/interface decls hit the
+        // re-entry guard and short-circuit, so bodies are not re-checked.
+        foreach (var pkg in context.Pkgs)
         {
-            ResolveStmt(context, context.File.Hir.Return);
+            foreach (var file in pkg.Files)
+            {
+                var fileCtx = MakeFileContext(context, pkg, file);
+                _narrowed.Clear();
+                ResolveStmts(fileCtx, file.Hir.Body);
+                if (file.Hir.Return != null) ResolveStmt(fileCtx, file.Hir.Return);
+            }
         }
 
         return true;
+    }
+
+    private static PassContext MakeFileContext(PassContext parent, PackageContext pkg, PreparsedFile file)
+        => new(parent.Diag, parent.Pkgs, pkg, file, parent.Types, parent.SymAlloc,
+               parent.ScopeAlloc, parent.NodeAlloc, parent.Names, parent.Cache, parent.Config);
+
+    /// <summary>
+    /// Pre-phase: visit every declaration that contributes type info to the
+    /// symbol table (class/interface members, declare-variable types,
+    /// declare-function signatures, declare-module members). Without this,
+    /// e.g. `declare Steam: SteamStatic` in a freshly-loaded .d.lux file
+    /// would not have its symbol typed until that file's normal walk —
+    /// which might happen AFTER a consumer file uses `Steam.X` and falls
+    /// through to `any`. Body resolution on classes/interfaces happens here
+    /// too; the re-entry guard skips it in Phase 2.
+    /// </summary>
+    private void ResolveTypeUniverseDecls(PassContext pc, List<Stmt> stmts)
+    {
+        foreach (var stmt in stmts)
+        {
+            switch (stmt)
+            {
+                case ClassDecl cd:
+                    ResolveClassDecl(pc, cd);
+                    break;
+                case InterfaceDecl id:
+                    ResolveInterfaceDecl(pc, id);
+                    break;
+                case DeclareVariableDecl dvd:
+                    ResolveDecl(pc, dvd);
+                    break;
+                case DeclareFunctionDecl dfd:
+                    ResolveDecl(pc, dfd);
+                    break;
+                case ExportStmt es:
+                    switch (es.Declaration)
+                    {
+                        case ClassDecl ecd: ResolveClassDecl(pc, ecd); break;
+                        case InterfaceDecl eid: ResolveInterfaceDecl(pc, eid); break;
+                        case DeclareVariableDecl edvd: ResolveDecl(pc, edvd); break;
+                        case DeclareFunctionDecl edfd: ResolveDecl(pc, edfd); break;
+                    }
+                    break;
+                case DeclareModuleDecl dmd:
+                    foreach (var member in dmd.Members)
+                    {
+                        switch (member)
+                        {
+                            case ClassDecl mcd: ResolveClassDecl(pc, mcd); break;
+                            case InterfaceDecl mid: ResolveInterfaceDecl(pc, mid); break;
+                            case DeclareVariableDecl mdvd: ResolveDecl(pc, mdvd); break;
+                            case DeclareFunctionDecl mdfd: ResolveDecl(pc, mdfd); break;
+                        }
+                    }
+                    break;
+            }
+        }
     }
 
     private void ResolveStmts(PassContext pc, List<Stmt> stmts)
@@ -288,6 +370,8 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerFile)
 
     private void ResolveClassDecl(PassContext pc, ClassDecl cd)
     {
+        if (!_resolvedClassDecls.Add(cd.ID)) return;
+
         if (cd.Name.Sym == SymID.Invalid) return;
         if (!pc.Pkg!.Syms.GetByID(cd.Name.Sym, out var classSym)) return;
         if (!pc.Types.GetByID(classSym.Type, out var rawType) || rawType is not ClassType classType) return;
@@ -351,6 +435,12 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerFile)
 
             if (method.IsAsync) _asyncDepth++;
             var methodParams = new List<Tuple<string, Type>>();
+
+            // Implicit "self" parameter for instance methods
+            if (!method.IsStatic)
+            {
+                methodParams.Add(new Tuple<string, Type>("self", classType));
+            }
             var isVararg = false;
             Type? varargType = null;
             var defaultIndices = new List<int>();
@@ -361,7 +451,7 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerFile)
                 if (p.IsVararg) { isVararg = true; varargType = t.Kind == TypeKind.PrimitiveAny ? null : t; }
                 else { methodParams.Add(new Tuple<string, Type>(p.Name.Name, t)); }
                 if (p.Name.Sym != SymID.Invalid) pc.Pkg!.Syms.SetType(p.Name.Sym, t.ID);
-                if (p.DefaultValue != null) { SynthesizeExpr(pc, p.DefaultValue); defaultIndices.Add(i); }
+                if (p.DefaultValue != null) { SynthesizeExpr(pc, p.DefaultValue); defaultIndices.Add(method.IsStatic ? i : i + 1); }
             }
             var retType = method.ReturnType != null && method.ReturnType.ResolvedType != TypID.Invalid
                 ? GetType(pc, method.ReturnType.ResolvedType) : pc.Types.PrimNil;
@@ -507,6 +597,7 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerFile)
 
     private void ResolveInterfaceDecl(PassContext pc, InterfaceDecl id)
     {
+        if (!_resolvedInterfaceDecls.Add(id.ID)) return;
         if (id.Name.Sym == SymID.Invalid) return;
         if (!pc.Pkg!.Syms.GetByID(id.Name.Sym, out var ifaceSym)) return;
         if (!pc.Types.GetByID(ifaceSym.Type, out var rawType) || rawType is not InterfaceType ifaceType) return;
@@ -1291,10 +1382,49 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerFile)
                 resultType = baseTyp;
                 break;
             }
+            case InterfaceType ift:
+            {
+                var fname = dot.FieldName.Name;
+                if (ift.Fields.TryGetValue(fname, out var ifield))
+                {
+                    resultType = ifield.Type.ID;
+                }
+                else if (ift.Methods.TryGetValue(fname, out var imethod))
+                {
+                    resultType = imethod.ID;
+                }
+                else
+                {
+                    var found = false;
+                    var visited = new HashSet<InterfaceType>();
+                    var queue = new Queue<InterfaceType>(ift.BaseInterfaces);
+                    while (!found && queue.TryDequeue(out var bi))
+                    {
+                        if (!visited.Add(bi)) continue;
+                        if (bi.Fields.TryGetValue(fname, out var bf)) { resultType = bf.Type.ID; found = true; break; }
+                        if (bi.Methods.TryGetValue(fname, out var bm)) { resultType = bm.ID; found = true; break; }
+                        foreach (var nbi in bi.BaseInterfaces) queue.Enqueue(nbi);
+                    }
+                    if (!found)
+                    {
+                        pc.Diag.Report(dot.FieldName.Span, DiagnosticCode.ErrTypeNotIndexable,
+                            $"interface '{ift.Name}' has no member '{fname}'");
+                        return pc.Types.PrimAny.ID;
+                    }
+                }
+                break;
+            }
             case ClassType ct:
             {
                 var fname = dot.FieldName.Name;
-                if (ct.InstanceFields.TryGetValue(fname, out var field))
+                var isClassRef = dot.Object is NameExpr cre
+                    && pc.Pkg!.Syms.GetByID(cre.Name.Sym, out var cSym)
+                    && cSym.Kind == SymbolKind.Class;
+                if (isClassRef && ct.StaticMethods.TryGetValue(fname, out var staticFirst))
+                {
+                    resultType = staticFirst.ID;
+                }
+                else if (ct.InstanceFields.TryGetValue(fname, out var field))
                 {
                     CheckProtectedAccess(pc, dot.FieldName.Span, ct, fname);
                     resultType = field.Type.ID;
@@ -1394,6 +1524,27 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerFile)
 
     private TypID InferFunctionCall(PassContext pc, FunctionCallExpr call)
     {
+        if (call.Callee is DotAccessExpr dotCallee
+            && pc.Pkg!.Types.GetByID(SynthesizeExpr(pc, dotCallee.Object), out var receiverType)
+            && receiverType is ClassType receiverClass)
+        {
+            var isClassRef = dotCallee.Object is NameExpr cn
+                && pc.Pkg!.Syms.GetByID(cn.Name.Sym, out var cs)
+                && cs.Kind == SymbolKind.Class;
+            var mname = dotCallee.FieldName.Name;
+            if (!isClassRef
+                && receiverClass.Methods.ContainsKey(mname)
+                && !receiverClass.StaticMethods.ContainsKey(mname)
+                && !mname.StartsWith("__"))
+            {
+                var recvName = dotCallee.Object is NameExpr cne ? cne.Name.Name : "obj";
+                pc.Diag.Report(call.Callee.Span, DiagnosticCode.ErrInstanceMethodNeedsColon,
+                    mname, receiverClass.Name, recvName);
+                foreach (var arg in call.Arguments) SynthesizeExpr(pc, arg);
+                return call.IsOptional ? MakeNullable(pc, pc.Types.PrimAny.ID) : pc.Types.PrimAny.ID;
+            }
+        }
+
         var argTypes = new List<TypID>();
         foreach (var arg in call.Arguments)
         {
@@ -1527,9 +1678,10 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerFile)
             objTyp = StripNil(pc, objTyp);
         }
 
+        var argTypes = new List<TypID>();
         foreach (var arg in mc.Arguments)
         {
-            SynthesizeExpr(pc, arg);
+            argTypes.Add(SynthesizeExpr(pc, arg));
         }
 
         if (!pc.Pkg!.Types.GetByID(objTyp, out var objType))
@@ -1537,16 +1689,57 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerFile)
             return pc.Types.PrimAny.ID;
         }
 
-        if (objType is StructType st)
+        var methodFn = ResolveMethodOnType(objType, mc.MethodName.Name);
+        if (methodFn == null)
         {
-            var field = st.Fields.FirstOrDefault(f => f.Name.Name == mc.MethodName.Name);
-            if (field?.Type is FunctionType fnType)
+            if (objType.Kind != TypeKind.PrimitiveAny)
             {
-                return fnType.ReturnType.ID;
+                pc.Diag.Report(mc.MethodName.Span, DiagnosticCode.ErrTypeNotIndexable,
+                    $"{TypeName(pc, objTyp)} has no method '{mc.MethodName.Name}'");
             }
+            return pc.Types.PrimAny.ID;
         }
 
-        return pc.Types.PrimAny.ID;
+        var fullArgs = objType is ClassType
+            ? new List<TypID>(argTypes.Count + 1) { objTyp }
+            : new List<TypID>(argTypes.Count);
+        fullArgs.AddRange(argTypes);
+        CheckCallArguments(pc, mc.Span, methodFn, fullArgs);
+
+        return methodFn.ReturnType.ID;
+    }
+
+    private static FunctionType? ResolveMethodOnType(Type baseType, string methodName)
+    {
+        if (baseType is ClassType ct)
+        {
+            var cur = ct;
+            while (cur != null)
+            {
+                if (cur.Methods.TryGetValue(methodName, out var m)) return m;
+                cur = cur.BaseClass;
+            }
+            return null;
+        }
+        if (baseType is InterfaceType ift)
+        {
+            if (ift.Methods.TryGetValue(methodName, out var direct)) return direct;
+            var visited = new HashSet<InterfaceType>();
+            var queue = new Queue<InterfaceType>(ift.BaseInterfaces);
+            while (queue.TryDequeue(out var bi))
+            {
+                if (!visited.Add(bi)) continue;
+                if (bi.Methods.TryGetValue(methodName, out var inherited)) return inherited;
+                foreach (var nbi in bi.BaseInterfaces) queue.Enqueue(nbi);
+            }
+            return null;
+        }
+        if (baseType is StructType st)
+        {
+            var field = st.Fields.FirstOrDefault(f => f.Name.Name == methodName);
+            return field?.Type as FunctionType;
+        }
+        return null;
     }
 
     private TypID InferTableConstructor(PassContext pc, TableConstructorExpr tc)
@@ -1634,8 +1827,15 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerFile)
         var paramCount = fnType.ParamTypes.Count;
         var argCount = argTypes.Count;
         var minParams = fnType.MinParamCount;
+        
+        var requiredCount = minParams;
+        while (requiredCount > argCount && requiredCount > 0
+               && IsNullable(pc, fnType.ParamTypes[requiredCount - 1].ID))
+        {
+            requiredCount--;
+        }
 
-        if (argCount < minParams)
+        if (argCount < requiredCount)
         {
             pc.Diag.Report(span, DiagnosticCode.ErrFuncParamMismatch, minParams, argCount);
             return;

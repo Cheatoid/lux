@@ -62,7 +62,7 @@ class Counter
     end
 end
 
-class Box
+class ItemBag
     items: number[]
 
     constructor()
@@ -132,7 +132,7 @@ export function run(): nil
     expectEq("instance value c1", c1:value(), 2)
 
     -- Accessor (getter)
-    local b = new Box()
+    local b = new ItemBag()
     b:push(1)
     b:push(2)
     b:push(3)
