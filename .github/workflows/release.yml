@@ -51,6 +51,21 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
+      - name: Resolve version from tag
+        id: ver
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ github.event.inputs.tag }}" ]]; then
+            TAG="${{ github.event.inputs.tag }}"
+          elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+          else
+            TAG="v0.0.0-dev"
+          fi
+          VERSION="${TAG#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
       - name: Restore solution
         run: dotnet restore Lux.sln
 
@@ -66,6 +81,7 @@ jobs:
             -c Release \
             -r ${{ matrix.rid }} \
             --self-contained true \
+            -p:Version=${{ steps.ver.outputs.version }} \
             -p:PublishSingleFile=true \
             -p:IncludeNativeLibrariesForSelfExtract=true \
             -p:IncludeAllContentForSelfExtract=true \
@@ -169,12 +185,13 @@ jobs:
           echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
           echo "vsix=$VSIX"             >> "$GITHUB_OUTPUT"
 
-      - name: Stage LICENSE + README into extension
+      - name: Stage LICENSE + README + icon into extension
         shell: bash
         run: |
           set -euo pipefail
           cp LICENSE vscode-lux/LICENSE
           cp README.md vscode-lux/README.md
+          cp assets/banner.png vscode-lux/icon.png
 
       - name: Install extension deps
         working-directory: vscode-lux

@@ -5,6 +5,7 @@
   "version": "0.1.0",
   "publisher": "DasDarki",
   "license": "MIT",
+  "icon": "icon.png",
   "homepage": "https://github.com/LuaLux/lux#readme",
   "repository": {
     "type": "git",

@@ -86,6 +86,13 @@ public sealed class Config
 
     public string Source { get; set; } = "src";
 
+    /// <summary>
+    /// When true, the project ships only <c>.d.lux</c> declaration files (a "types-only"
+    /// package — like a TypeScript <c>@types/*</c> shim). <c>lux build</c>, <c>compile</c>,
+    /// <c>run</c> and <c>test</c> become graceful no-ops; <c>lux docs</c> still generates.
+    /// </summary>
+    public bool TypesOnly { get; set; } = false;
+
     public ScriptsSection Scripts { get; set; } = new();
 
     public CodeSection Code { get; set; } = new();
@@ -158,6 +165,7 @@ public sealed class Config
         GenerateDocs = MergeVal(GenerateDocs, config.GenerateDocs, false);
         GenerateDeclarations = MergeVal(GenerateDeclarations, config.GenerateDeclarations, true);
         Source = MergeVal(Source, config.Source, "src");
+        TypesOnly = MergeVal(TypesOnly, config.TypesOnly, false);
         Globals.AddRange(config.Globals);
         Annotations.AddRange(config.Annotations);
 
@@ -249,6 +257,7 @@ public sealed class Config
             GenerateDocs = GenerateDocs,
             GenerateDeclarations = GenerateDeclarations,
             Source = Source,
+            TypesOnly = TypesOnly,
             Globals = [..Globals],
             Annotations = [..Annotations],
             Scripts = Scripts,

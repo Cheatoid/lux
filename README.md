@@ -126,7 +126,19 @@ dotnet build Lux.sln
 
 ### Editor support
 
-A VS Code extension lives in [`vscode-lux/`](vscode-lux/). Build & install:
+The [**Lux VS Code extension**](https://marketplace.visualstudio.com/items?itemName=DasDarki.lux-lang) is on the Marketplace. Install it from inside VS Code (Quick Open `Ctrl+P` / `Cmd+P`):
+
+```
+ext install DasDarki.lux-lang
+```
+
+Or via the CLI:
+
+```bash
+code --install-extension DasDarki.lux-lang
+```
+
+Prefer to build from source? The extension lives in [`vscode-lux/`](vscode-lux/):
 
 ```bash
 cd vscode-lux

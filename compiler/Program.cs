@@ -22,9 +22,11 @@ internal static class Program
         }
 #endif
 
+        Upgrader.CleanupStaleBackup();
+
         var command = args.Length > 0 ? args[0].ToLowerInvariant() : "help";
 
-        return command switch
+        var exit = command switch
         {
             "build" => await RunBuildAsync(args.Skip(1).ToArray()),
             "run" => await RunExecuteAsync(args.Skip(1).ToArray()),
@@ -39,10 +41,17 @@ internal static class Program
             "test" => await RunTestAsync(args.Skip(1).ToArray()),
             "compile" => await RunCompileAsync(args.Skip(1).ToArray()),
             "repl" => await RunReplAsync(args.Skip(1).ToArray()),
+            "upgrade" => await Upgrader.RunUpgradeAsync(args.Skip(1).ToArray()),
+            "check" => await Upgrader.RunCheckAsync(),
             "version" => RunVersion(),
             "help" or "--help" or "-h" => RunHelp(),
             _ => RunUnknown(command)
         };
+
+        if (command is "version" or "help" or "--help" or "-h")
+            await Upgrader.MaybeShowUpdateNoticeAsync();
+
+        return exit;
     }
 
     private static async Task<int> RunBuildAsync(string[] fileArgs)
@@ -57,6 +66,12 @@ internal static class Program
     {
         var configPath = Path.Combine(Environment.CurrentDirectory, "lux.toml");
         var config = Config.LoadFromFile(configPath) ?? new Config();
+
+        if (config.TypesOnly)
+        {
+            Console.WriteLine("Types-only project — nothing to compile.");
+            return 0;
+        }
 
         var srcDir = Path.Combine(Environment.CurrentDirectory, config.Source);
         if (!Directory.Exists(srcDir))
@@ -75,7 +90,17 @@ internal static class Program
             .ToArray();
         if (sourceFiles.Length == 0)
         {
-            await Console.Error.WriteLineAsync($"No .lux files found in '{config.Source}'.");
+            var hasDecls = Directory.EnumerateFiles(srcDir, "*.d.lux", SearchOption.AllDirectories).Any();
+            if (hasDecls)
+            {
+                await Console.Error.WriteLineAsync(
+                    $"No .lux files found in '{config.Source}', only declarations. " +
+                    "Set `types_only = true` in lux.toml if this is a types-only package.");
+            }
+            else
+            {
+                await Console.Error.WriteLineAsync($"No .lux files found in '{config.Source}'.");
+            }
             return 1;
         }
 
@@ -250,6 +275,12 @@ internal static class Program
             var configPath = Path.Combine(Environment.CurrentDirectory, "lux.toml");
             config ??= Config.LoadFromFile(configPath) ?? new Config();
 
+            if (config.TypesOnly)
+            {
+                await Console.Error.WriteLineAsync("error: cannot run a types-only project (no executable code).");
+                return 1;
+            }
+
             var srcDir = Path.Combine(Environment.CurrentDirectory, config.Source);
             if (!Directory.Exists(srcDir))
             {
@@ -389,14 +420,24 @@ internal static class Program
             return 1;
         }
 
-        var config = new Config();
-        Config.SaveToFile(config, configPath);
+        var defaults = new Config();
+        var projectName = Path.GetFileName(Environment.CurrentDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        if (string.IsNullOrWhiteSpace(projectName)) projectName = "myproject";
+        projectName = projectName.Replace("\\", "\\\\").Replace("\"", "\\\"");
 
-        Directory.CreateDirectory(Path.Combine(Environment.CurrentDirectory, config.Source));
-        Directory.CreateDirectory(Path.Combine(Environment.CurrentDirectory, config.Output));
+        var toml = $"""
+            name = "{projectName}"
+            version = "0.1.0"
+            target = "5.4"
+
+            """;
+        File.WriteAllText(configPath, toml);
+
+        Directory.CreateDirectory(Path.Combine(Environment.CurrentDirectory, defaults.Source));
+        Directory.CreateDirectory(Path.Combine(Environment.CurrentDirectory, defaults.Output));
 
         var gitignorePath = Path.Combine(Environment.CurrentDirectory, ".gitignore");
-        var entries = new[] { $"{config.Output}/", "lux_modules/" };
+        var entries = new[] { $"{defaults.Output}/", "lux_modules/" };
         if (!File.Exists(gitignorePath))
         {
             File.WriteAllText(gitignorePath, string.Join('\n', entries) + "\n");
@@ -415,17 +456,28 @@ internal static class Program
 
         Console.WriteLine("Initialized Lux project:");
         Console.WriteLine($"  lux.toml");
-        Console.WriteLine($"  {config.Source}/");
-        Console.WriteLine($"  {config.Output}/");
+        Console.WriteLine($"  {defaults.Source}/");
+        Console.WriteLine($"  {defaults.Output}/");
         Console.WriteLine($"  .gitignore");
         return 0;
     }
 
     private static int RunVersion()
     {
-        var version = Assembly.GetExecutingAssembly().GetName().Version;
-        Console.WriteLine($"lux {version?.ToString(3) ?? "0.0.0"}");
+        Console.WriteLine($"lux {GetLuxVersion()}");
         return 0;
+    }
+
+    internal static string GetLuxVersion()
+    {
+        var asm = Assembly.GetExecutingAssembly();
+        var informational = asm.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+        if (!string.IsNullOrWhiteSpace(informational))
+        {
+            var plus = informational.IndexOf('+');
+            return plus >= 0 ? informational[..plus] : informational;
+        }
+        return asm.GetName().Version?.ToString(3) ?? "0.0.0";
     }
 
     private static int RunHelp()
@@ -454,6 +506,9 @@ internal static class Program
         Console.WriteLine("                            --aot (experimental), --keep-build");
         Console.WriteLine("  repl               Start an interactive Lux session (Ctrl+D or :quit to exit)");
         Console.WriteLine("  lps                Start the language server (LSP via stdio)");
+        Console.WriteLine("  check              Check whether a newer Lux release is available");
+        Console.WriteLine("  upgrade            Download and install the latest Lux release");
+        Console.WriteLine("                     Flags: --force (reinstall even if already up to date)");
         Console.WriteLine("  version            Print the Lux version");
         Console.WriteLine("  help               Show this help message");
         return 0;
@@ -550,6 +605,12 @@ internal static class Program
         var configPath = Path.Combine(Environment.CurrentDirectory, "lux.toml");
         var config = Config.LoadFromFile(configPath) ?? new Config();
         quiet = quiet || config.Test.Quiet;
+
+        if (config.TypesOnly && explicitFiles.Count == 0)
+        {
+            Console.WriteLine("Types-only project — no tests to run.");
+            return 0;
+        }
 
         var srcDir = Path.Combine(Environment.CurrentDirectory, config.Source);
         var sourceFiles = Directory.Exists(srcDir)
@@ -754,8 +815,7 @@ internal static class Program
 
     private static void PrintReplHeader(Config config)
     {
-        var version = Assembly.GetExecutingAssembly().GetName().Version;
-        Console.WriteLine($"[1mLux REPL[0m {version?.ToString(3) ?? "0.0.0"} (target {config.Target}). Type [36m:help[0m for commands, [36m:quit[0m to exit.");
+        Console.WriteLine($"[1mLux REPL[0m {GetLuxVersion()} (target {config.Target}). Type [36m:help[0m for commands, [36m:quit[0m to exit.");
         Console.WriteLine("[2mNote: top-level `local` declarations don't persist between inputs — use `name = ...` for globals.[0m");
     }
 
@@ -970,6 +1030,12 @@ internal static class Program
 
         var configPath = Path.Combine(Environment.CurrentDirectory, "lux.toml");
         var config = Config.LoadFromFile(configPath) ?? new Config();
+
+        if (config.TypesOnly)
+        {
+            await Console.Error.WriteLineAsync("error: cannot bundle a types-only project (no executable code).");
+            return 1;
+        }
 
         var srcDir = Path.Combine(Environment.CurrentDirectory, config.Source);
         if (!Directory.Exists(srcDir))
