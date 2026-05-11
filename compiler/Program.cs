@@ -43,6 +43,7 @@ internal static class Program
             "repl" => await RunReplAsync(args.Skip(1).ToArray()),
             "upgrade" => await Upgrader.RunUpgradeAsync(args.Skip(1).ToArray()),
             "check" => await Upgrader.RunCheckAsync(),
+            "_upgrade_apply" => await Upgrader.RunDeferredApplyAsync(args.Skip(1).ToArray()),
             "version" => RunVersion(),
             "help" or "--help" or "-h" => RunHelp(),
             _ => RunUnknown(command)

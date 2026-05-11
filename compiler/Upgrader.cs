@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Formats.Tar;
 using System.IO.Compression;
 using System.Net.Http;
@@ -106,6 +107,14 @@ internal static class Upgrader
                 await Console.Error.WriteLineAsync($"Permission denied writing to {currentPath}. {hint}");
                 return 1;
             }
+            catch (Exception inPlaceEx)
+            {
+                Console.WriteLine($"In-place replace failed ({inPlaceEx.GetType().Name}: {inPlaceEx.Message}).");
+                Console.WriteLine("Scheduling deferred upgrade — a helper will apply it once this process exits.");
+                SpawnDeferredHelper(currentPath, newBinary);
+                Console.WriteLine($"Update will land at {currentPath} shortly. Run `lux version` afterwards to confirm.");
+                return 0;
+            }
 
             Console.WriteLine($"Updated lux: {current} -> {latest}");
             return 0;
@@ -192,6 +201,177 @@ internal static class Upgrader
         }
     }
 
+    /// <summary>
+    /// Notfall-Pfad. Wird aufgerufen wenn <see cref="ReplaceBinary"/> trotz aller
+    /// Vorsicht knallt (z.B. weil das Ziel als Text-Segment gemappt ist und das
+    /// Filesystem keine atomare Replace-Operation hergibt). Wir kopieren das neue
+    /// Binary in einen unabhängigen Temp-Ordner und starten es als
+    /// <c>_upgrade_apply</c>-Helper. Der wartet auf das Sterben des aktuellen
+    /// Prozesses, kopiert dann das (ebenfalls gestagete) Binary über das Ziel
+    /// und räumt sich selbst auf. Wichtig: der Helper darf NICHT aus dem Pfad
+    /// laufen den er gleich überschreibt — sonst trifft ihn dasselbe ETXTBSY.
+    /// </summary>
+    private static void SpawnDeferredHelper(string currentPath, string newBinary)
+    {
+        var isWindows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
+        var helperDir = Path.Combine(Path.GetTempPath(), $"lux-upgrade-helper-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(helperDir);
+
+        var helperBinaryName = isWindows ? "lux-helper.exe" : "lux-helper";
+        var helperBinary = Path.Combine(helperDir, helperBinaryName);
+        var stagedSource = Path.Combine(helperDir, isWindows ? "lux.new.exe" : "lux.new");
+        var logPath = Path.Combine(helperDir, "log.txt");
+
+        File.Copy(newBinary, helperBinary, overwrite: true);
+        File.Copy(newBinary, stagedSource, overwrite: true);
+
+        if (!isWindows)
+        {
+            var execMode = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+                | UnixFileMode.GroupRead | UnixFileMode.GroupExecute
+                | UnixFileMode.OtherRead | UnixFileMode.OtherExecute;
+            File.SetUnixFileMode(helperBinary, execMode);
+            File.SetUnixFileMode(stagedSource, execMode);
+        }
+
+        var psi = new ProcessStartInfo
+        {
+            FileName = helperBinary,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            // No stdin/stdout/stderr inheritance — once the parent exits those
+            // handles close and writes would fail. The helper logs to log.txt
+            // inside its own dir for debugging instead.
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            RedirectStandardInput = true,
+        };
+        psi.ArgumentList.Add("_upgrade_apply");
+        psi.ArgumentList.Add("--pid");
+        psi.ArgumentList.Add(Environment.ProcessId.ToString());
+        psi.ArgumentList.Add("--source");
+        psi.ArgumentList.Add(stagedSource);
+        psi.ArgumentList.Add("--target");
+        psi.ArgumentList.Add(currentPath);
+        psi.ArgumentList.Add("--cleanup-dir");
+        psi.ArgumentList.Add(helperDir);
+        psi.ArgumentList.Add("--log");
+        psi.ArgumentList.Add(logPath);
+
+        Process.Start(psi);
+        // Intentionally don't wait. Helper continues independently after this
+        // process exits; on Unix init reaps it, on Windows the OS handles it.
+    }
+
+    /// <summary>
+    /// Helper-Entry-Point. Wartet bis der aufrufende lux-Prozess weg ist, dann
+    /// überschreibt das Ziel mit der Staged-Source. Mehrere Retries weil
+    /// andere lux-Prozesse (z.B. ein parallel laufender <c>lux lps</c> im VS
+    /// Code) das Ziel kurzzeitig noch mappen können.
+    /// </summary>
+    public static async Task<int> RunDeferredApplyAsync(string[] args)
+    {
+        int? pid = null;
+        string? source = null;
+        string? target = null;
+        string? cleanupDir = null;
+        string? logPath = null;
+
+        for (var i = 0; i < args.Length; i++)
+        {
+            switch (args[i])
+            {
+                case "--pid" when i + 1 < args.Length:
+                    if (int.TryParse(args[++i], out var p)) pid = p;
+                    break;
+                case "--source" when i + 1 < args.Length:
+                    source = args[++i]; break;
+                case "--target" when i + 1 < args.Length:
+                    target = args[++i]; break;
+                case "--cleanup-dir" when i + 1 < args.Length:
+                    cleanupDir = args[++i]; break;
+                case "--log" when i + 1 < args.Length:
+                    logPath = args[++i]; break;
+            }
+        }
+
+        if (source == null || target == null)
+        {
+            Log(logPath, "missing required --source or --target");
+            return 1;
+        }
+
+        if (pid is { } parentPid)
+        {
+            Log(logPath, $"waiting for parent pid {parentPid}...");
+            try
+            {
+                using var parent = Process.GetProcessById(parentPid);
+                await parent.WaitForExitAsync();
+            }
+            catch (ArgumentException)
+            {
+                // Parent already gone — fine, fall through to the replace.
+            }
+            catch (Exception ex)
+            {
+                Log(logPath, $"wait error: {ex.Message} — proceeding anyway");
+            }
+        }
+
+        // Grace period: even after the parent is "exited", the kernel may need
+        // a tick to fully unmap the text segment. 500ms is generous.
+        await Task.Delay(500);
+
+        Log(logPath, $"applying {source} -> {target}");
+
+        Exception? lastError = null;
+        for (var attempt = 1; attempt <= 10; attempt++)
+        {
+            try
+            {
+                File.Copy(source, target, overwrite: true);
+                if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                {
+                    File.SetUnixFileMode(target,
+                        UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+                        | UnixFileMode.GroupRead | UnixFileMode.GroupExecute
+                        | UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
+                }
+                Log(logPath, $"success on attempt {attempt}");
+                TryRemoveDir(cleanupDir);
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                lastError = ex;
+                Log(logPath, $"attempt {attempt} failed: {ex.GetType().Name}: {ex.Message}");
+                await Task.Delay(TimeSpan.FromMilliseconds(500 * attempt));
+            }
+        }
+
+        Log(logPath, $"giving up after 10 attempts. last error: {lastError}");
+        // Don't clean up the dir on failure — keeps the log around for the
+        // user to inspect.
+        return 1;
+    }
+
+    private static void Log(string? path, string message)
+    {
+        if (path == null) return;
+        try
+        {
+            File.AppendAllText(path, $"[{DateTimeOffset.UtcNow:O}] {message}{Environment.NewLine}");
+        }
+        catch { /* best-effort */ }
+    }
+
+    private static void TryRemoveDir(string? path)
+    {
+        if (path == null) return;
+        try { if (Directory.Exists(path)) Directory.Delete(path, recursive: true); } catch { }
+    }
+
     public static void CleanupStaleBackup()
     {
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) return;
@@ -227,8 +407,59 @@ internal static class Upgrader
         http.DefaultRequestHeaders.UserAgent.ParseAdd(UserAgent);
         using var resp = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead);
         resp.EnsureSuccessStatusCode();
+
+        var totalBytes = resp.Content.Headers.ContentLength;
+        var canRender = !Console.IsOutputRedirected;
+
+        await using var contentStream = await resp.Content.ReadAsStreamAsync();
         await using var fs = File.Create(destPath);
-        await resp.Content.CopyToAsync(fs);
+
+        var buffer = new byte[81920];
+        long readBytes = 0;
+        var lastRender = DateTime.UtcNow - TimeSpan.FromSeconds(1);
+
+        int n;
+        while ((n = await contentStream.ReadAsync(buffer)) > 0)
+        {
+            await fs.WriteAsync(buffer.AsMemory(0, n));
+            readBytes += n;
+
+            if (canRender && (DateTime.UtcNow - lastRender).TotalMilliseconds >= 100)
+            {
+                RenderProgress(readBytes, totalBytes);
+                lastRender = DateTime.UtcNow;
+            }
+        }
+
+        if (canRender)
+        {
+            RenderProgress(readBytes, totalBytes);
+            Console.WriteLine();
+        }
+    }
+
+    private static void RenderProgress(long current, long? total)
+    {
+        const int width = 30;
+        if (total is { } t && t > 0)
+        {
+            var pct = Math.Clamp((double)current / t, 0.0, 1.0);
+            var filled = (int)Math.Round(pct * width);
+            var bar = new string('█', filled) + new string('░', width - filled);
+            Console.Write($"\r  [{bar}] {pct,4:P0}  {FormatBytes(current)} / {FormatBytes(t)}   ");
+        }
+        else
+        {
+            Console.Write($"\r  {FormatBytes(current)} downloaded   ");
+        }
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        if (bytes < 1024) return $"{bytes} B";
+        if (bytes < 1024L * 1024) return $"{bytes / 1024.0:F1} KiB";
+        if (bytes < 1024L * 1024 * 1024) return $"{bytes / (1024.0 * 1024):F1} MiB";
+        return $"{bytes / (1024.0 * 1024 * 1024):F2} GiB";
     }
 
     private static async Task ExtractAsync(string archivePath, string destDir)
@@ -302,15 +533,22 @@ internal static class Upgrader
         }
         else
         {
-            // Unix: replacing a running binary is safe — the kernel keeps the
-            // old inode mapped for the running process while the path now
-            // points at the new file.
-            File.Move(newBinary, currentPath, overwrite: true);
-            var perms = File.GetUnixFileMode(currentPath);
-            File.SetUnixFileMode(currentPath, perms
-                | UnixFileMode.UserExecute
-                | UnixFileMode.GroupExecute
-                | UnixFileMode.OtherExecute);
+            // Unix: replacing a running binary via rename(2) is safe (kernel
+            // keeps the old inode mapped for the running process). But if the
+            // staged file lives on a different filesystem than the target
+            // (e.g. extracted to /tmp which is tmpfs while the binary lives
+            // under $HOME on the root fs), File.Move falls back to copy+
+            // delete and the copy hits ETXTBSY because it opens the running
+            // exe for writing. Stage a sibling of the target so the final
+            // move is a same-fs rename.
+            var stagedPath = currentPath + ".new";
+            try { if (File.Exists(stagedPath)) File.Delete(stagedPath); } catch { }
+            File.Copy(newBinary, stagedPath, overwrite: true);
+            File.SetUnixFileMode(stagedPath,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute
+                | UnixFileMode.GroupRead | UnixFileMode.GroupExecute
+                | UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
+            File.Move(stagedPath, currentPath, overwrite: true);
         }
     }
 
