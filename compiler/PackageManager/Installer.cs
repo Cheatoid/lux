@@ -84,18 +84,20 @@ public sealed class Installer
             }
 
             LockedPackage locked;
+            using var spinner = new Spinner($"Resolving {name}...");
             try
             {
                 locked = await ResolveOneAsync(name, spec, existing, opts);
             }
             catch (PackageManagerException ex)
             {
+                spinner.Stop();
                 await Console.Error.WriteLineAsync($"error: failed to install '{name}' (required by {parent}): {ex.Message}");
                 return 1;
             }
 
             resolved[name] = locked;
-            Console.WriteLine($"  resolved {name} -> {locked.Resolved}@{Short(locked.Commit)}{(locked.Version is null ? "" : " (" + locked.Version + ")")}");
+            spinner.Stop($"  resolved {name} -> {locked.Resolved}@{Short(locked.Commit)}{(locked.Version is null ? "" : " (" + locked.Version + ")")}");
 
             var storePath = StorePathOf(locked);
             var depManifestPath = Path.Combine(storePath, "lux.toml");
@@ -155,7 +157,10 @@ public sealed class Installer
                 }
             }
 
-            Linker.Link(storePath, linkPath, config.Install.Linker);
+            using (var linkSpinner = new Spinner($"Linking {locked.Name}..."))
+            {
+                Linker.Link(storePath, linkPath, config.Install.Linker);
+            }
 
             if (depCfg != null && depCfg.Scripts.PostInstall.Count > 0)
             {
@@ -310,24 +315,55 @@ public sealed class Installer
 
     public async Task<int> RemoveAsync(string name, Config config, string projectDir, string configPath, InstallOptions opts)
     {
-        var removed = false;
-        removed |= config.Dependencies.Remove(name);
-        removed |= config.DevDependencies.Remove(name);
-        removed |= config.PeerDependencies.Remove(name);
-
-        if (!removed)
+        // Direct match against the dep key — what gets stored after `lux add`
+        // is the package's canonical name from its manifest, NOT what the user
+        // typed. So `lux add my-alias` → entry "actual-pkg = "my-alias"`, and
+        // `lux remove my-alias` would miss without the value-match fallback
+        // below.
+        var actualKey = ResolveDepKey(config, name);
+        if (actualKey == null)
         {
             await Console.Error.WriteLineAsync($"error: '{name}' is not a declared dependency.");
             return 1;
         }
 
-        if (!ManifestEditor.Remove(configPath, name))
+        config.Dependencies.Remove(actualKey);
+        config.DevDependencies.Remove(actualKey);
+        config.PeerDependencies.Remove(actualKey);
+
+        if (!ManifestEditor.Remove(configPath, actualKey))
         {
             await Console.Error.WriteLineAsync("warning: lux.toml was not updated (entry not present in file).");
         }
 
-        Console.WriteLine($"Removed {name}");
+        Console.WriteLine(actualKey == name
+            ? $"Removed {name}"
+            : $"Removed {actualKey} (added as '{name}')");
         return await InstallAsync(config, projectDir, opts);
+    }
+
+    /// <summary>
+    /// Finds which dependency entry matches <paramref name="userInput"/> across
+    /// all dep groups. Tries the key first (canonical name), then matches the
+    /// raw spec value — so users can remove via the alias they originally
+    /// passed to <c>lux add</c>. Returns null if nothing matches; returns the
+    /// canonical key on success.
+    /// </summary>
+    private static string? ResolveDepKey(Config config, string userInput)
+    {
+        foreach (var map in new[] { config.Dependencies, config.DevDependencies, config.PeerDependencies })
+        {
+            if (map.ContainsKey(userInput)) return userInput;
+        }
+        foreach (var map in new[] { config.Dependencies, config.DevDependencies, config.PeerDependencies })
+        {
+            foreach (var (key, val) in map)
+            {
+                if (val is string s && string.Equals(s, userInput, StringComparison.Ordinal))
+                    return key;
+            }
+        }
+        return null;
     }
 
     private Dictionary<string, PackageSpec> BuildRootSet(Config config, bool includeDev)

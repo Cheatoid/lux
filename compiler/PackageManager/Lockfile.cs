@@ -41,8 +41,50 @@ public sealed class Lockfile
         foreach (var p in Packages)
             p.Deps = p.Deps.OrderBy(d => d, StringComparer.Ordinal).ToList();
 
-        var text = TomlSerializer.Serialize(this, Options);
-        File.WriteAllText(path, text);
+        // Hand-rolled output. Tomlyn defaults to serializing List<T> as an
+        // inline array of inline tables, which collapses every package onto
+        // one line — terrible for git diffs. We want the standard
+        // [[packages]] array-of-tables form so each field lives on its own
+        // line and each package is its own block.
+        var sb = new System.Text.StringBuilder();
+        sb.Append("version = ").Append(Version).Append('\n');
+
+        foreach (var p in Packages)
+        {
+            sb.Append('\n');
+            sb.Append("[[packages]]\n");
+            sb.Append("name = ").Append(TomlString(p.Name)).Append('\n');
+            sb.Append("spec = ").Append(TomlString(p.Spec)).Append('\n');
+            sb.Append("resolved = ").Append(TomlString(p.Resolved)).Append('\n');
+            sb.Append("commit = ").Append(TomlString(p.Commit)).Append('\n');
+            if (p.Version != null)
+                sb.Append("version = ").Append(TomlString(p.Version)).Append('\n');
+            sb.Append("integrity = ").Append(TomlString(p.Integrity)).Append('\n');
+            if (p.Subdir != null)
+                sb.Append("subdir = ").Append(TomlString(p.Subdir)).Append('\n');
+            if (p.Deps.Count == 0)
+            {
+                sb.Append("deps = []\n");
+            }
+            else
+            {
+                sb.Append("deps = [\n");
+                foreach (var d in p.Deps)
+                    sb.Append("    ").Append(TomlString(d)).Append(",\n");
+                sb.Append("]\n");
+            }
+        }
+
+        File.WriteAllText(path, sb.ToString());
+    }
+
+    private static string TomlString(string s)
+    {
+        // Basic TOML string: needs quotes around the value and any embedded "
+        // or \ escaped. Lockfile values are paths / urls / hashes — no
+        // multiline strings, no control chars, so this is sufficient.
+        var escaped = s.Replace("\\", "\\\\").Replace("\"", "\\\"");
+        return "\"" + escaped + "\"";
     }
 
     public LockedPackage? Find(string name) =>
