@@ -1,7 +1,7 @@
 {
   "name": "lux-lang",
-  "displayName": "Lux Language",
-  "description": "Language support for the Lux typed Lua transpiler",
+  "displayName": "Lux - A typed superset of Lua",
+  "description": "Language support for Lua Lux — the typed Lua transpiler",
   "version": "0.1.0",
   "publisher": "DasDarki",
   "license": "MIT",
