@@ -424,6 +424,7 @@ declareClassMember
     : (LOCAL | PROTECTED)? STATIC? NAME typeAnnotation?                              # DeclareClassFieldMember
     | (LOCAL | PROTECTED)? STATIC? OVERRIDE? ABSTRACT? ASYNC? FUNCTION NAME funcSignature  # DeclareClassMethodMember
     | CONSTRUCTOR funcSignature                                                       # DeclareClassConstructorMember
+    | OPERATOR operatorSymbol funcSignature                                           # DeclareClassOperatorMember
     | NAME NAME funcSignature                                                         # DeclareClassAccessorMember
     ;
 

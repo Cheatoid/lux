@@ -1,0 +1,16 @@
+--- Sub-module of the local `animals/` folder. Reachable as
+--- `import { Dog } from "animals/dog"`.
+
+import { Animal } from "animals"
+
+export class Dog implements Animal
+    name: string
+
+    constructor(name: string)
+        self.name = name
+    end
+
+    function sound(): string
+        return "woof"
+    end
+end

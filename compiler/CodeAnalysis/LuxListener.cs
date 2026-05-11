@@ -1275,6 +1275,18 @@ public interface ILuxListener : IParseTreeListener {
 	/// <param name="context">The parse tree.</param>
 	void ExitDeclareClassConstructorMember([NotNull] LuxParser.DeclareClassConstructorMemberContext context);
 	/// <summary>
+	/// Enter a parse tree produced by the <c>DeclareClassOperatorMember</c>
+	/// labeled alternative in <see cref="LuxParser.declareClassMember"/>.
+	/// </summary>
+	/// <param name="context">The parse tree.</param>
+	void EnterDeclareClassOperatorMember([NotNull] LuxParser.DeclareClassOperatorMemberContext context);
+	/// <summary>
+	/// Exit a parse tree produced by the <c>DeclareClassOperatorMember</c>
+	/// labeled alternative in <see cref="LuxParser.declareClassMember"/>.
+	/// </summary>
+	/// <param name="context">The parse tree.</param>
+	void ExitDeclareClassOperatorMember([NotNull] LuxParser.DeclareClassOperatorMemberContext context);
+	/// <summary>
 	/// Enter a parse tree produced by the <c>DeclareClassAccessorMember</c>
 	/// labeled alternative in <see cref="LuxParser.declareClassMember"/>.
 	/// </summary>

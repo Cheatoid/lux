@@ -107,13 +107,34 @@ public sealed class ResolveImportsPass() : Pass(PassName, PassScope.PerBuild)
                     ResolveFromDeclareModule(ctx, pkg, import, resolved.DeclareModule!);
                     break;
                 case ModuleKind.Declaration:
-                    ResolveFromDeclFile(ctx, pkg, import, resolved.File!);
+                {
+                    var sourcePkg = FindPackageOf(ctx, resolved.File!) ?? pkg;
+                    ResolveFromDeclFile(ctx, pkg, sourcePkg, import, resolved.File!);
                     break;
+                }
                 case ModuleKind.LuxSource:
-                    ResolveFromLuxSource(ctx, pkg, import, resolved.File!);
+                {
+                    var sourcePkg = FindPackageOf(ctx, resolved.File!) ?? pkg;
+                    ResolveFromLuxSource(ctx, pkg, sourcePkg, import, resolved.File!);
                     break;
+                }
             }
         }
+    }
+
+    /// <summary>
+    /// Each <c>.lux</c> source file lives in its own <see cref="PackageContext"/>
+    /// (see <c>LuxCompiler.AddSource</c>), so a cross-file import has to look up
+    /// the source symbol in the EXPORTER's package, not the importer's. This
+    /// helper finds the package that owns <paramref name="file"/>.
+    /// </summary>
+    private static PackageContext? FindPackageOf(PassContext ctx, PreparsedFile file)
+    {
+        foreach (var p in ctx.Pkgs)
+        {
+            if (p.Files.Contains(file)) return p;
+        }
+        return null;
     }
 
     private static void ResolveFromDeclareModule(PassContext ctx, PackageContext pkg,
@@ -147,7 +168,7 @@ public sealed class ResolveImportsPass() : Pass(PassName, PassScope.PerBuild)
         }
     }
 
-    private static void ResolveFromDeclFile(PassContext ctx, PackageContext pkg,
+    private static void ResolveFromDeclFile(PassContext ctx, PackageContext pkg, PackageContext sourcePkg,
         ImportStmt import, PreparsedFile declFile)
     {
         foreach (var stmt in declFile.Hir.Body)
@@ -159,13 +180,15 @@ public sealed class ResolveImportsPass() : Pass(PassName, PassScope.PerBuild)
             }
         }
 
-        ResolveFromTopLevelDeclarations(ctx, pkg, import, declFile);
+        ResolveFromTopLevelDeclarations(ctx, pkg, sourcePkg, import, declFile);
     }
 
-    private static void ResolveFromLuxSource(PassContext ctx, PackageContext pkg,
+    private static void ResolveFromLuxSource(PassContext ctx, PackageContext pkg, PackageContext sourcePkg,
         ImportStmt import, PreparsedFile sourceFile)
     {
-        var exports = CollectExportedSymbols(pkg, sourceFile);
+        // exports live in the SOURCE file's package (each .lux file gets its
+        // own package); use sourcePkg for the lookups, pkg for the target.
+        var exports = CollectExportedSymbols(sourcePkg, sourceFile);
 
         switch (import.Kind)
         {
@@ -176,7 +199,7 @@ public sealed class ResolveImportsPass() : Pass(PassName, PassScope.PerBuild)
                     if (exports.TryGetValue(memberName, out var exportSym))
                     {
                         var importName = spec.Alias ?? spec.Name;
-                        CopySymbolType(pkg, exportSym, importName.Sym);
+                        CopySymbolType(sourcePkg, exportSym, pkg, importName.Sym);
                     }
                 }
                 break;
@@ -186,7 +209,7 @@ public sealed class ResolveImportsPass() : Pass(PassName, PassScope.PerBuild)
         }
     }
 
-    private static void ResolveFromTopLevelDeclarations(PassContext ctx, PackageContext pkg,
+    private static void ResolveFromTopLevelDeclarations(PassContext ctx, PackageContext pkg, PackageContext sourcePkg,
         ImportStmt import, PreparsedFile file)
     {
         var topLevel = new Dictionary<string, SymID>();
@@ -196,11 +219,11 @@ public sealed class ResolveImportsPass() : Pass(PassName, PassScope.PerBuild)
             switch (stmt)
             {
                 case DeclareFunctionDecl dfd when dfd.NamePath.Count == 1:
-                    if (pkg.Scopes.Lookup(pkg.Root, dfd.NamePath[0].Name, out var dfSym))
+                    if (sourcePkg.Scopes.Lookup(sourcePkg.Root, dfd.NamePath[0].Name, out var dfSym))
                         topLevel[dfd.NamePath[0].Name] = dfSym;
                     break;
                 case DeclareVariableDecl dvd:
-                    if (pkg.Scopes.Lookup(pkg.Root, dvd.Name.Name, out var dvSym))
+                    if (sourcePkg.Scopes.Lookup(sourcePkg.Root, dvd.Name.Name, out var dvSym))
                         topLevel[dvd.Name.Name] = dvSym;
                     break;
             }
@@ -216,7 +239,7 @@ public sealed class ResolveImportsPass() : Pass(PassName, PassScope.PerBuild)
                     if (topLevel.TryGetValue(spec.Name.Name, out var sym))
                     {
                         var importName = spec.Alias ?? spec.Name;
-                        CopySymbolType(pkg, sym, importName.Sym);
+                        CopySymbolType(sourcePkg, sym, pkg, importName.Sym);
                     }
                 }
                 break;
@@ -292,14 +315,26 @@ public sealed class ResolveImportsPass() : Pass(PassName, PassScope.PerBuild)
         return exports;
     }
 
-    private static void CopySymbolType(PackageContext pkg, SymID source, SymID target)
+    /// <summary>
+    /// Copies the resolved type of <paramref name="source"/> (looked up in
+    /// <paramref name="srcPkg"/>'s symbol arena) onto <paramref name="target"/>
+    /// (looked up in <paramref name="tgtPkg"/>'s arena). The two arenas can be
+    /// the same (intra-package import) or different (cross-package import,
+    /// e.g. between two sibling source files); SymIDs are unique across the
+    /// shared <c>SymAlloc</c> but every <see cref="PackageContext"/> only
+    /// stores its own subset of <see cref="Symbol"/> records.
+    /// </summary>
+    private static void CopySymbolType(PackageContext srcPkg, SymID source, PackageContext tgtPkg, SymID target)
     {
         if (source == SymID.Invalid || target == SymID.Invalid) return;
-        if (!pkg.Syms.GetByID(source, out var srcSym)) return;
-        if (!pkg.Syms.GetByID(target, out var tgtSym)) return;
+        if (!srcPkg.Syms.GetByID(source, out var srcSym)) return;
+        if (!tgtPkg.Syms.GetByID(target, out var tgtSym)) return;
         if (srcSym.Type != TypID.Invalid)
             tgtSym.Type = srcSym.Type;
     }
+
+    private static void CopySymbolType(PackageContext pkg, SymID source, SymID target)
+        => CopySymbolType(pkg, source, pkg, target);
 
     private static SymID FindModuleSymbol(PackageContext pkg, string name)
     {

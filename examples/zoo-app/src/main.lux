@@ -5,6 +5,12 @@ import { trim, padLeft, startsWith } from "lux-strings"
 import { capitalize } from "lux-strings/case"
 import { lerp, clamp, sum, vec2, length2, Vec2 } from "lua-math"
 
+--- Local imports: resolver picks up sibling files and folders in src/.
+import { formatLabel, padCols } from "utils"
+import { Animal, kinds } from "animals"
+import { Cat } from "animals/cat"
+import { Dog } from "animals/dog"
+
 --- Builds the welcome banner for an animal name. Demonstrates that a string
 --- value flows through several library calls while the type checker tracks
 --- it as `string` end-to-end.
@@ -34,3 +40,11 @@ local origin = vec2(3, 4)
 print("|origin| = " .. tostring(length2(origin)))
 print("lerp(0,10,0.25) = " .. tostring(lerp(0, 10, 0.25)))
 print("sum(1..5) = " .. tostring(sum(1, 2, 3, 4, 5)))
+
+--- Local animals: typed via the Animal interface from animals/init.lux,
+--- instantiated from sibling files in the same folder via `new`.
+local critters: Animal[] = { new Cat("Whiskers"), new Dog("Rex") }
+print(formatLabel("kinds", table.concat(kinds(), ", ")))
+for _, a in ipairs(critters) do
+    print(formatLabel(padCols(a.name, 10), a:sound()))
+end

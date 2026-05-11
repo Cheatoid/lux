@@ -204,6 +204,25 @@ internal partial class IRVisitor
                     constructor = new ClassConstructorNode(parameters, [], null, SpanFromCtx(ctor));
                     break;
                 }
+                case LuxParser.DeclareClassOperatorMemberContext opMember:
+                {
+                    var (parameters, returnType) = VisitFuncSignatureContent(opMember.funcSignature());
+                    var symText = opMember.operatorSymbol().GetText();
+                    var metaName = OperatorSymbolToMetamethod(symText, parameters.Count, out var diagMsg);
+                    if (metaName == null)
+                    {
+                        diag.Report(SpanFromCtx(opMember.operatorSymbol()), Diagnostics.DiagnosticCode.ErrInvalidOperator, diagMsg ?? symText);
+                        break;
+                    }
+                    var opNameRef = NameRefFromText(metaName, SpanFromCtx(opMember.operatorSymbol()));
+                    var opMethodNode = new ClassMethodNode(
+                        opNameRef, parameters, returnType, [], null,
+                        isLocal: false, isStatic: false, isAsync: false,
+                        isProtected: false, isOverride: false, isAbstract: false,
+                        SpanFromCtx(opMember), isOperator: true, operatorSymbol: symText);
+                    methods.Add(opMethodNode);
+                    break;
+                }
                 case LuxParser.DeclareClassAccessorMemberContext accessor:
                 {
                     var kindName = accessor.NAME(0).GetText();
@@ -349,6 +368,25 @@ internal partial class IRVisitor
                 {
                     var (parameters, _) = VisitFuncSignatureContent(ctor.funcSignature());
                     constructor = new ClassConstructorNode(parameters, [], null, SpanFromCtx(ctor));
+                    break;
+                }
+                case LuxParser.DeclareClassOperatorMemberContext opMember:
+                {
+                    var (parameters, returnType) = VisitFuncSignatureContent(opMember.funcSignature());
+                    var symText = opMember.operatorSymbol().GetText();
+                    var metaName = OperatorSymbolToMetamethod(symText, parameters.Count, out var diagMsg);
+                    if (metaName == null)
+                    {
+                        diag.Report(SpanFromCtx(opMember.operatorSymbol()), Diagnostics.DiagnosticCode.ErrInvalidOperator, diagMsg ?? symText);
+                        break;
+                    }
+                    var opNameRef = NameRefFromText(metaName, SpanFromCtx(opMember.operatorSymbol()));
+                    var opMethodNode = new ClassMethodNode(
+                        opNameRef, parameters, returnType, [], null,
+                        isLocal: false, isStatic: false, isAsync: false,
+                        isProtected: false, isOverride: false, isAbstract: false,
+                        SpanFromCtx(opMember), isOperator: true, operatorSymbol: symText);
+                    methods.Add(opMethodNode);
                     break;
                 }
                 case LuxParser.DeclareClassAccessorMemberContext accessor:

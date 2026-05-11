@@ -13,6 +13,9 @@ system end to end.
 | **Sub-module import** | `import { capitalize } from "lux-strings/case"` resolves to `lux_modules/lux-strings/case.lua`. |
 | **Lua → Lux import via .d.lux** | `import { lerp, clamp, vec2 } from "lua-math"` finds the `declare module "lua-math"` block in `init.d.lux`; the type-checker uses it while the generated code falls through to the real `init.lua`. |
 | **Cross-package types** | `Vec2` (declared in lua-math) flows through `length2` and stays type-safe in zoo-app. |
+| **Local file import** | `import { formatLabel, padCols } from "utils"` picks up the sibling `src/utils.lux` — no package-manager wiring needed. |
+| **Local folder-as-module** | `import { kinds } from "animals"` resolves to `src/animals/init.lux` because the folder has an `init.lux`. |
+| **Local submodule import** | `import { makeCat } from "animals/cat"` resolves to `src/animals/cat.lux` — a file inside a folder, addressable with a slash. |
 
 ## Run it
 
@@ -37,4 +40,7 @@ quiet (120 dB)
 |origin| = 5.0
 lerp(0,10,0.25) = 2.5
 sum(1..5) = 15
+kinds => cat, dog
+Whiskers   => meow
+Rex        => woof
 ```

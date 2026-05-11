@@ -1498,6 +1498,20 @@ public partial class LuxBaseListener : ILuxListener {
 	/// <param name="context">The parse tree.</param>
 	public virtual void ExitDeclareClassConstructorMember([NotNull] LuxParser.DeclareClassConstructorMemberContext context) { }
 	/// <summary>
+	/// Enter a parse tree produced by the <c>DeclareClassOperatorMember</c>
+	/// labeled alternative in <see cref="LuxParser.declareClassMember"/>.
+	/// <para>The default implementation does nothing.</para>
+	/// </summary>
+	/// <param name="context">The parse tree.</param>
+	public virtual void EnterDeclareClassOperatorMember([NotNull] LuxParser.DeclareClassOperatorMemberContext context) { }
+	/// <summary>
+	/// Exit a parse tree produced by the <c>DeclareClassOperatorMember</c>
+	/// labeled alternative in <see cref="LuxParser.declareClassMember"/>.
+	/// <para>The default implementation does nothing.</para>
+	/// </summary>
+	/// <param name="context">The parse tree.</param>
+	public virtual void ExitDeclareClassOperatorMember([NotNull] LuxParser.DeclareClassOperatorMemberContext context) { }
+	/// <summary>
 	/// Enter a parse tree produced by the <c>DeclareClassAccessorMember</c>
 	/// labeled alternative in <see cref="LuxParser.declareClassMember"/>.
 	/// <para>The default implementation does nothing.</para>
