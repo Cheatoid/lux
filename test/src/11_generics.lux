@@ -1,0 +1,72 @@
+import { section, expectEq, expect } from "_runner"
+
+class Box<T>
+    value: T
+    constructor(value: T)
+        self.value = value
+    end
+    function get(): T
+        return self.value
+    end
+end
+
+interface HasName
+    name: string
+end
+
+class Pet implements HasName
+    name: string
+    constructor(name: string)
+        self.name = name
+    end
+end
+
+class Registry<T extends HasName>
+    items: T[]
+
+    constructor()
+        self.items = {}
+    end
+
+    function add(item: T): nil
+        table.insert(self.items, item)
+    end
+
+    function nameAt(i: number): string
+        return self.items[i].name
+    end
+end
+
+local function identity<T>(value: T): T
+    return value
+end
+
+local function pair<A, B>(a: A, b: B): (A, B)
+    return a, b
+end
+
+export function run(): nil
+    section("generics")
+
+    local intBox: Box<number> = new Box(42)
+    expectEq("Box<number>", intBox:get(), 42)
+
+    local strBox: Box<string> = new Box("hi")
+    expectEq("Box<string>", strBox:get(), "hi")
+
+    -- Bound generic class
+    local r: Registry<Pet> = new Registry()
+    r:add(new Pet("Whiskers"))
+    r:add(new Pet("Rex"))
+    expectEq("Registry add+get name 1", r:nameAt(1), "Whiskers")
+    expectEq("Registry add+get name 2", r:nameAt(2), "Rex")
+
+    -- Generic function
+    expectEq("identity<number>", identity(7), 7)
+    expectEq("identity<string>", identity("ok"), "ok")
+
+    -- Multi-param generic
+    local s, n = pair("x", 9)
+    expectEq("pair first", s, "x")
+    expectEq("pair second", n, 9)
+end

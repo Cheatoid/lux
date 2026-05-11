@@ -1,0 +1,44 @@
+import { section, expectEq, expect } from "_runner"
+
+local function maybeName(use: boolean): string?
+    if use then return "Alice" end
+    return nil
+end
+
+local function callMaybe(fn: (() -> string)?): string
+    return fn?() ?? "default"
+end
+
+export function run(): nil
+    section("nilability")
+
+    -- Nullable return type + nil-coalescing
+    local a: string = maybeName(true) ?? "fallback"
+    expectEq("?? unwraps when present", a, "Alice")
+
+    local b: string = maybeName(false) ?? "fallback"
+    expectEq("?? falls back on nil", b, "fallback")
+
+    -- Non-null assertion (!)
+    local c: string = maybeName(true)!
+    expectEq("! asserts present", c, "Alice")
+
+    -- Optional call (?.)
+    local fn: (() -> string)? = function(): string return "live" end
+    expectEq("optional call live", callMaybe(fn), "live")
+
+    local none: (() -> string)? = nil
+    expectEq("optional call nil", callMaybe(none), "default")
+
+    -- Optional field access via ?. on tables
+    local maybeTable: { name: string }? = { name = "Bob" }
+    expectEq("optional field present", maybeTable?.name ?? "?", "Bob")
+
+    local nilTable: { name: string }? = nil
+    expectEq("optional field absent", nilTable?.name ?? "?", "?")
+
+    -- Chained ?? (right-assoc)
+    local first: string? = nil
+    local second: string? = nil
+    expectEq("chained ??", first ?? second ?? "third", "third")
+end

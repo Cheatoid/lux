@@ -1,0 +1,47 @@
+declare module "lux.annotation"
+    enum AnnotationTarget
+        Function
+        LocalFunction
+        Variable
+        Parameter
+        Enum
+        EnumMember
+        Class
+        ClassMethod
+        ClassField
+        ClassConstructor
+        ClassAccessor
+        Interface
+        InterfaceMethod
+        InterfaceField
+    end
+
+    interface AnnotationParamSpec
+        type: string
+        default: any
+        required: boolean
+    end
+
+    interface AnnotationMeta
+        target: AnnotationTarget
+        params: { [string]: AnnotationParamSpec }
+    end
+
+    interface IRNode
+        kind: string
+        id: number
+        span: number[]
+    end
+
+    declare ir: {
+        stringLiteral: (value: string) -> IRNode,
+        numberLiteral: (raw: string) -> IRNode,
+        boolLiteral: (value: boolean) -> IRNode,
+        nilLiteral: () -> IRNode,
+        nameExpr: (name: string) -> IRNode,
+        call: (callee: string, args: IRNode[]) -> IRNode,
+        methodCall: (object: IRNode, method: string, args: IRNode[]) -> IRNode,
+        exprStmt: (expr: IRNode) -> IRNode,
+        returnStmt: (values: IRNode[]) -> IRNode,
+    }
+end

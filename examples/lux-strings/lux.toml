@@ -1,0 +1,7 @@
+name = "lux-strings"
+version = "0.1.0"
+target = "5.4"
+source = "."
+output = "."
+generate_declarations = false
+

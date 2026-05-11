@@ -1,0 +1,1624 @@
+using System.Diagnostics;
+using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Text;
+using Lux.Compiler;
+using Lux.Configuration;
+using Lux.LPS;
+using Lux.PackageManager;
+using Lux.Runtime;
+
+namespace Lux;
+
+internal static class Program
+{
+    private static async Task<int> Main(string[] args)
+    {
+#if DEBUG
+        if (args.Length > 0 && args[0] == "--test")
+        {
+            var testFile = Path.Combine(Environment.CurrentDirectory, "..", "..", "test.lux");
+            return await RunBuildFilesAsync([testFile]);
+        }
+#endif
+
+        var command = args.Length > 0 ? args[0].ToLowerInvariant() : "help";
+
+        return command switch
+        {
+            "build" => await RunBuildAsync(args.Skip(1).ToArray()),
+            "run" => await RunExecuteAsync(args.Skip(1).ToArray()),
+            "lps" => await RunLpsAsync(),
+            "init" => RunInit(),
+            "create" => await RunCreateAsync(args.Skip(1).ToArray()),
+            "install" => await RunInstallAsync(args.Skip(1).ToArray()),
+            "add" => await RunAddAsync(args.Skip(1).ToArray()),
+            "remove" or "rm" => await RunRemoveAsync(args.Skip(1).ToArray()),
+            "registry" => await RunRegistryAsync(args.Skip(1).ToArray()),
+            "docs" => await RunDocsAsync(args.Skip(1).ToArray()),
+            "test" => await RunTestAsync(args.Skip(1).ToArray()),
+            "compile" => await RunCompileAsync(args.Skip(1).ToArray()),
+            "repl" => await RunReplAsync(args.Skip(1).ToArray()),
+            "version" => RunVersion(),
+            "help" or "--help" or "-h" => RunHelp(),
+            _ => RunUnknown(command)
+        };
+    }
+
+    private static async Task<int> RunBuildAsync(string[] fileArgs)
+    {
+        if (fileArgs.Length > 0)
+            return await RunBuildFilesAsync(fileArgs);
+
+        return await RunBuildProjectAsync();
+    }
+
+    private static async Task<int> RunBuildProjectAsync()
+    {
+        var configPath = Path.Combine(Environment.CurrentDirectory, "lux.toml");
+        var config = Config.LoadFromFile(configPath) ?? new Config();
+
+        var srcDir = Path.Combine(Environment.CurrentDirectory, config.Source);
+        if (!Directory.Exists(srcDir))
+        {
+            await Console.Error.WriteLineAsync($"Source directory '{config.Source}' not found.");
+            return 1;
+        }
+
+        var outDir = Path.Combine(Environment.CurrentDirectory, config.Output);
+
+        if (!RunScripts(config.Scripts.PreBuild, "pre-build"))
+            return 1;
+
+        var sourceFiles = Directory.GetFiles(srcDir, "*.lux", SearchOption.AllDirectories)
+            .Where(f => !f.EndsWith(".d.lux", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        if (sourceFiles.Length == 0)
+        {
+            await Console.Error.WriteLineAsync($"No .lux files found in '{config.Source}'.");
+            return 1;
+        }
+
+        var compiler = new LuxCompiler { Config = config };
+        foreach (var file in sourceFiles)
+            compiler.AddSource(file);
+
+        var success = compiler.Compile();
+        if (!success)
+        {
+            foreach (var diag in compiler.Diagnostics.Diagnostics)
+                await Console.Error.WriteLineAsync(diag.ToString());
+            await Console.Error.WriteLineAsync("Build FAILED.");
+            return 1;
+        }
+
+        Directory.CreateDirectory(outDir);
+        await WriteOutputFilesAsync(compiler, srcDir, outDir, config);
+
+        Console.WriteLine($"Build SUCCESS — {sourceFiles.Length} file(s) compiled to '{config.Output}/'.");
+
+        if (!RunScripts(config.Scripts.PostBuild, "post-build"))
+            return 1;
+
+        return 0;
+    }
+
+    private static async Task<int> RunBuildFilesAsync(string[] fileArgs)
+    {
+        Config? config = null;
+        var luxFiles = new List<string>();
+
+        foreach (var arg in fileArgs)
+        {
+            var fullPath = Path.GetFullPath(arg);
+            if (fullPath.EndsWith(".toml", StringComparison.OrdinalIgnoreCase) ||
+                fullPath.EndsWith("lux.toml", StringComparison.OrdinalIgnoreCase))
+            {
+                config = Config.LoadFromFile(fullPath);
+            }
+            else if (fullPath.EndsWith(".lux", StringComparison.OrdinalIgnoreCase) &&
+                     !fullPath.EndsWith(".d.lux", StringComparison.OrdinalIgnoreCase))
+            {
+                if (File.Exists(fullPath))
+                    luxFiles.Add(fullPath);
+                else
+                    await Console.Error.WriteLineAsync($"File not found: {arg}");
+            }
+            else
+            {
+                await Console.Error.WriteLineAsync($"Unknown file type: {arg}");
+            }
+        }
+
+        config ??= new Config();
+
+        if (luxFiles.Count == 0)
+        {
+            await Console.Error.WriteLineAsync("No .lux files specified.");
+            return 1;
+        }
+
+        var compiler = new LuxCompiler { Config = config };
+        foreach (var file in luxFiles)
+            compiler.AddSource(file);
+
+        var success = compiler.Compile();
+        if (!success)
+        {
+            foreach (var diag in compiler.Diagnostics.Diagnostics)
+                await Console.Error.WriteLineAsync(diag.ToString());
+            await Console.Error.WriteLineAsync("Build FAILED.");
+            return 1;
+        }
+
+        var outDir = Path.Combine(Environment.CurrentDirectory, config.Output);
+        Directory.CreateDirectory(outDir);
+
+        var baseDir = luxFiles.Count == 1
+            ? Path.GetDirectoryName(luxFiles[0])!
+            : FindCommonParent(luxFiles);
+
+        await WriteOutputFilesAsync(compiler, baseDir, outDir, config);
+
+        Console.WriteLine($"Build SUCCESS — {luxFiles.Count} file(s) compiled to '{config.Output}/'.");
+        return 0;
+    }
+
+    private static async Task WriteOutputFilesAsync(LuxCompiler compiler, string baseDir, string outDir, Config config)
+    {
+        foreach (var pkg in compiler.Packages.Values)
+        {
+            foreach (var file in pkg.Files)
+            {
+                if (string.IsNullOrEmpty(file.GeneratedLua)) continue;
+
+                var relativePath = Path.GetRelativePath(baseDir, file.Filename ?? "output.lua");
+                var outputPath = Path.Combine(outDir, Path.ChangeExtension(relativePath, ".lua"));
+
+                var outputFileDir = Path.GetDirectoryName(outputPath);
+                if (outputFileDir != null) Directory.CreateDirectory(outputFileDir);
+
+                await File.WriteAllTextAsync(outputPath, file.GeneratedLua);
+            }
+        }
+
+        if (compiler.Cache.TryGetValue("GeneratedDeclarations", out var declObj) && declObj is string declContent)
+        {
+            var declName = config.Name ?? "index";
+            var declPath = Path.Combine(outDir, declName + ".d.lux");
+            await File.WriteAllTextAsync(declPath, declContent);
+        }
+    }
+
+    private static string FindCommonParent(List<string> paths)
+    {
+        if (paths.Count == 0) return Environment.CurrentDirectory;
+        var dirs = paths.Select(p => Path.GetDirectoryName(p) ?? "").ToList();
+        var common = dirs[0];
+        foreach (var dir in dirs.Skip(1))
+        {
+            while (!dir.StartsWith(common, StringComparison.OrdinalIgnoreCase) && common.Length > 0)
+            {
+                common = Path.GetDirectoryName(common) ?? "";
+            }
+        }
+        return string.IsNullOrEmpty(common) ? Environment.CurrentDirectory : common;
+    }
+
+    private static async Task<int> RunExecuteAsync(string[] fileArgs)
+    {
+        Config? config = null;
+        var luxFiles = new List<string>();
+        var passThroughArgs = new List<string>();
+        var parsingLuxArgs = true;
+
+        foreach (var arg in fileArgs)
+        {
+            if (!parsingLuxArgs)
+            {
+                passThroughArgs.Add(arg);
+                continue;
+            }
+
+            if (arg == "--")
+            {
+                parsingLuxArgs = false;
+                continue;
+            }
+
+            var fullPath = Path.GetFullPath(arg);
+            if (fullPath.EndsWith(".toml", StringComparison.OrdinalIgnoreCase) ||
+                fullPath.EndsWith("lux.toml", StringComparison.OrdinalIgnoreCase))
+            {
+                config = Config.LoadFromFile(fullPath);
+            }
+            else if (fullPath.EndsWith(".lux", StringComparison.OrdinalIgnoreCase) &&
+                     !fullPath.EndsWith(".d.lux", StringComparison.OrdinalIgnoreCase))
+            {
+                if (File.Exists(fullPath)) luxFiles.Add(fullPath);
+                else await Console.Error.WriteLineAsync($"File not found: {arg}");
+            }
+            else
+            {
+                passThroughArgs.Add(arg);
+            }
+        }
+
+        var projectMode = luxFiles.Count == 0;
+        if (projectMode)
+        {
+            var configPath = Path.Combine(Environment.CurrentDirectory, "lux.toml");
+            config ??= Config.LoadFromFile(configPath) ?? new Config();
+
+            var srcDir = Path.Combine(Environment.CurrentDirectory, config.Source);
+            if (!Directory.Exists(srcDir))
+            {
+                await Console.Error.WriteLineAsync($"Source directory '{config.Source}' not found.");
+                return 1;
+            }
+
+            luxFiles.AddRange(Directory
+                .GetFiles(srcDir, "*.lux", SearchOption.AllDirectories)
+                .Where(f => !f.EndsWith(".d.lux", StringComparison.OrdinalIgnoreCase)));
+
+            if (luxFiles.Count == 0)
+            {
+                await Console.Error.WriteLineAsync($"No .lux files found in '{config.Source}'.");
+                return 1;
+            }
+        }
+        else
+        {
+            config ??= new Config();
+        }
+
+        var compiler = new LuxCompiler { Config = config };
+        foreach (var file in luxFiles)
+            compiler.AddSource(file);
+
+        var success = compiler.Compile();
+        if (!success)
+        {
+            foreach (var diag in compiler.Diagnostics.Diagnostics)
+                await Console.Error.WriteLineAsync(diag.ToString());
+            await Console.Error.WriteLineAsync("Build FAILED.");
+            return 1;
+        }
+
+        var baseDir = projectMode
+            ? Path.Combine(Environment.CurrentDirectory, config.Source)
+            : (luxFiles.Count == 1 ? Path.GetDirectoryName(luxFiles[0])! : FindCommonParent(luxFiles));
+
+        var outDir = projectMode
+            ? Path.Combine(Environment.CurrentDirectory, config.Output)
+            : Path.Combine(Path.GetTempPath(), "lux-run-" + Guid.NewGuid().ToString("N")[..8]);
+
+        Directory.CreateDirectory(outDir);
+        await WriteOutputFilesAsync(compiler, baseDir, outDir, config);
+
+        string? entryPath;
+        if (!string.IsNullOrEmpty(config.Entry))
+        {
+            string rel;
+            if (config.Entry.EndsWith(".lua", StringComparison.OrdinalIgnoreCase))
+                rel = config.Entry;
+            else if (config.Entry.EndsWith(".lux", StringComparison.OrdinalIgnoreCase))
+                rel = config.Entry[..^4] + ".lua";
+            else
+                rel = config.Entry + ".lua";
+            var candidate = Path.Combine(outDir, rel);
+            if (File.Exists(candidate)) entryPath = candidate;
+            else
+            {
+                await Console.Error.WriteLineAsync($"lux run: entry '{config.Entry}' not found in '{outDir}'.");
+                return 1;
+            }
+        }
+        else
+        {
+            entryPath = ResolveDefaultEntry(outDir, baseDir, luxFiles);
+            if (entryPath == null)
+            {
+                await Console.Error.WriteLineAsync(
+                    "lux run: could not determine entry file. Set [entry] in lux.toml, " +
+                    "or add a 'main.lux' / 'index.lux' to your source root.");
+                return 1;
+            }
+        }
+
+        using var runtime = new LuxRuntime();
+        runtime.AddPackagePath(outDir);
+
+        // Make `require("foo/bar")` from generated Lua resolve to a package
+        // installed under lux_modules/<name>/ so file-deps and git-deps can
+        // ship plain .lua entry points without further configuration.
+        var modulesDir = Path.Combine(Environment.CurrentDirectory, "lux_modules");
+        if (Directory.Exists(modulesDir))
+            runtime.AddPackagePath(modulesDir);
+
+        PushCommandLineArgs(runtime, passThroughArgs);
+
+        var ok = runtime.RunFile(entryPath);
+
+        if (!projectMode)
+        {
+            try { Directory.Delete(outDir, recursive: true); }
+            catch { /* best-effort cleanup */ }
+        }
+
+        return ok ? 0 : 1;
+    }
+
+    private static string? ResolveDefaultEntry(string outDir, string baseDir, List<string> luxFiles)
+    {
+        foreach (var candidate in new[] { "main.lua", "index.lua", "init.lua" })
+        {
+            var path = Path.Combine(outDir, candidate);
+            if (File.Exists(path)) return path;
+        }
+
+        if (luxFiles.Count == 1)
+        {
+            var rel = Path.GetRelativePath(baseDir, luxFiles[0]);
+            var lua = Path.Combine(outDir, Path.ChangeExtension(rel, ".lua"));
+            if (File.Exists(lua)) return lua;
+        }
+
+        return null;
+    }
+
+    private static void PushCommandLineArgs(LuxRuntime runtime, List<string> args)
+    {
+        if (args.Count == 0) return;
+        var escaped = string.Join(", ", args.Select(a => "\"" + a.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\""));
+        runtime.RunChunk($"arg = {{ {escaped} }}", "<lux-run-args>");
+    }
+
+    private static async Task<int> RunLpsAsync()
+    {
+        await LuxLanguageServer.RunAsync();
+        return 0;
+    }
+
+    private static int RunInit()
+    {
+        var configPath = Path.Combine(Environment.CurrentDirectory, "lux.toml");
+        if (File.Exists(configPath))
+        {
+            Console.Error.WriteLine("lux.toml already exists in the current directory.");
+            return 1;
+        }
+
+        var config = new Config();
+        Config.SaveToFile(config, configPath);
+
+        Directory.CreateDirectory(Path.Combine(Environment.CurrentDirectory, config.Source));
+        Directory.CreateDirectory(Path.Combine(Environment.CurrentDirectory, config.Output));
+
+        var gitignorePath = Path.Combine(Environment.CurrentDirectory, ".gitignore");
+        var entries = new[] { $"{config.Output}/", "lux_modules/" };
+        if (!File.Exists(gitignorePath))
+        {
+            File.WriteAllText(gitignorePath, string.Join('\n', entries) + "\n");
+        }
+        else
+        {
+            var content = File.ReadAllText(gitignorePath);
+            var toAppend = entries.Where(e => !content.Contains(e)).ToArray();
+            if (toAppend.Length > 0)
+            {
+                if (!content.EndsWith('\n')) content += "\n";
+                content += string.Join('\n', toAppend) + "\n";
+                File.WriteAllText(gitignorePath, content);
+            }
+        }
+
+        Console.WriteLine("Initialized Lux project:");
+        Console.WriteLine($"  lux.toml");
+        Console.WriteLine($"  {config.Source}/");
+        Console.WriteLine($"  {config.Output}/");
+        Console.WriteLine($"  .gitignore");
+        return 0;
+    }
+
+    private static int RunVersion()
+    {
+        var version = Assembly.GetExecutingAssembly().GetName().Version;
+        Console.WriteLine($"lux {version?.ToString(3) ?? "0.0.0"}");
+        return 0;
+    }
+
+    private static int RunHelp()
+    {
+        Console.WriteLine("Usage: lux <command> [args]");
+        Console.WriteLine();
+        Console.WriteLine("Commands:");
+        Console.WriteLine("  build              Compile the project (reads lux.toml)");
+        Console.WriteLine("  build <files...>   Compile specific .lux files (optional lux.toml)");
+        Console.WriteLine("  run                Compile and execute the project via embedded Lua");
+        Console.WriteLine("  run <files...>     Compile and execute specific .lux files");
+        Console.WriteLine("  init               Create a new Lux project in the current directory");
+        Console.WriteLine("  create <spec>      Scaffold a new project from a template (git spec or setup URL)");
+        Console.WriteLine("                     Flags: [dir], --skip-setup, --offline, --no-cache");
+        Console.WriteLine("  install            Install declared dependencies into lux_modules/");
+        Console.WriteLine("  add <spec>         Add a dependency (e.g. github:owner/repo@v1)");
+        Console.WriteLine("                     Flags: --dev, --peer");
+        Console.WriteLine("  remove <name>      Remove a declared dependency");
+        Console.WriteLine("  registry refresh   Refresh the cached alias registry index");
+        Console.WriteLine("  docs               Generate documentation site (Markdown + HTML)");
+        Console.WriteLine("                     Flags: --out <dir>, --no-html, --no-md");
+        Console.WriteLine("  test [filter]      Discover and run unit/integration tests");
+        Console.WriteLine("                     Flags: --quiet (suppress per-test ticks)");
+        Console.WriteLine("  compile            Bundle the project into a standalone native binary");
+        Console.WriteLine("                     Flags: --out <path>, --name <appname>, --target <rid>,");
+        Console.WriteLine("                            --aot (experimental), --keep-build");
+        Console.WriteLine("  repl               Start an interactive Lux session (Ctrl+D or :quit to exit)");
+        Console.WriteLine("  lps                Start the language server (LSP via stdio)");
+        Console.WriteLine("  version            Print the Lux version");
+        Console.WriteLine("  help               Show this help message");
+        return 0;
+    }
+
+    private static async Task<int> RunDocsAsync(string[] args)
+    {
+        var outDir = "docs";
+        var emitHtml = true;
+        var emitMd = true;
+
+        for (var i = 0; i < args.Length; i++)
+        {
+            switch (args[i])
+            {
+                case "--out" when i + 1 < args.Length:
+                    outDir = args[++i];
+                    break;
+                case "--no-html":
+                    emitHtml = false;
+                    break;
+                case "--no-md":
+                    emitMd = false;
+                    break;
+            }
+        }
+
+        if (!emitHtml && !emitMd)
+        {
+            await Console.Error.WriteLineAsync("error: nothing to emit (both --no-md and --no-html given).");
+            return 1;
+        }
+
+        var configPath = Path.Combine(Environment.CurrentDirectory, "lux.toml");
+        var config = Config.LoadFromFile(configPath) ?? new Config();
+
+        var site = Lux.Doc.DocSiteBuilder.Build(config, Environment.CurrentDirectory, out var diagnostics);
+        foreach (var d in diagnostics) await Console.Error.WriteLineAsync(d);
+
+        var fullOut = Path.IsPathRooted(outDir) ? outDir : Path.Combine(Environment.CurrentDirectory, outDir);
+        Directory.CreateDirectory(fullOut);
+
+        if (emitMd)
+        {
+            var mdRenderer = new Lux.Doc.MarkdownDocRenderer();
+            mdRenderer.WriteTo(site, fullOut);
+        }
+
+        if (emitHtml)
+        {
+            var htmlRenderer = new Lux.Doc.HtmlDocRenderer();
+            htmlRenderer.WriteTo(site, fullOut);
+        }
+
+        Console.WriteLine($"Generated docs for {site.Modules.Count} module(s) in '{outDir}'.");
+        return 0;
+    }
+
+    private static async Task<int> RunTestAsync(string[] args)
+    {
+        string? filter = null;
+        var quiet = false;
+        var explicitFiles = new List<string>();
+
+        foreach (var a in args)
+        {
+            switch (a)
+            {
+                case "--quiet":
+                case "-q":
+                    quiet = true;
+                    break;
+                default:
+                    if (a.StartsWith("--"))
+                    {
+                        await Console.Error.WriteLineAsync($"error: unknown flag '{a}'");
+                        return 1;
+                    }
+                    var path = Path.GetFullPath(a);
+                    if (File.Exists(path) && path.EndsWith(".lux", StringComparison.OrdinalIgnoreCase)
+                        && !path.EndsWith(".d.lux", StringComparison.OrdinalIgnoreCase))
+                        explicitFiles.Add(path);
+                    else if (filter == null)
+                        filter = a;
+                    else
+                    {
+                        await Console.Error.WriteLineAsync($"error: unexpected argument '{a}'");
+                        return 1;
+                    }
+                    break;
+            }
+        }
+
+        var configPath = Path.Combine(Environment.CurrentDirectory, "lux.toml");
+        var config = Config.LoadFromFile(configPath) ?? new Config();
+        quiet = quiet || config.Test.Quiet;
+
+        var srcDir = Path.Combine(Environment.CurrentDirectory, config.Source);
+        var sourceFiles = Directory.Exists(srcDir)
+            ? Directory.GetFiles(srcDir, "*.lux", SearchOption.AllDirectories)
+                .Where(f => !f.EndsWith(".d.lux", StringComparison.OrdinalIgnoreCase))
+                .ToList()
+            : [];
+
+        var testFiles = explicitFiles.Count > 0
+            ? explicitFiles
+            : DiscoverTestFiles(config, sourceFiles);
+
+        if (testFiles.Count == 0)
+        {
+            await Console.Error.WriteLineAsync(
+                $"lux test: no test files found. Searched dirs: {string.Join(", ", config.Test.Dirs)}; " +
+                $"patterns: {string.Join(", ", config.Test.Patterns)}.");
+            return 1;
+        }
+
+        var allLuxFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var f in sourceFiles) allLuxFiles.Add(f);
+        foreach (var f in testFiles) allLuxFiles.Add(f);
+
+        var compiler = new LuxCompiler { Config = config };
+        foreach (var file in allLuxFiles) compiler.AddSource(file);
+
+        var success = compiler.Compile();
+        if (!success)
+        {
+            foreach (var diag in compiler.Diagnostics.Diagnostics)
+                await Console.Error.WriteLineAsync(diag.ToString());
+            await Console.Error.WriteLineAsync("lux test: compilation FAILED.");
+            return 1;
+        }
+
+        var outDir = Path.Combine(Path.GetTempPath(), "lux-test-" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(outDir);
+        var baseDir = FindCommonParent([.. allLuxFiles]);
+        await WriteOutputFilesAsync(compiler, baseDir, outDir, config);
+
+        var compiledPaths = new List<string>();
+        foreach (var luxPath in testFiles)
+        {
+            var rel = Path.GetRelativePath(baseDir, luxPath);
+            var luaPath = Path.Combine(outDir, Path.ChangeExtension(rel, ".lua"));
+            if (File.Exists(luaPath)) compiledPaths.Add(luaPath);
+            else await Console.Error.WriteLineAsync($"lux test: compiled output missing for {luxPath}");
+        }
+
+        if (compiledPaths.Count == 0)
+        {
+            await Console.Error.WriteLineAsync("lux test: no compiled test files to execute.");
+            try { Directory.Delete(outDir, recursive: true); } catch { }
+            return 1;
+        }
+
+        using var runtime = new LuxRuntime();
+        runtime.AddPackagePath(outDir);
+        var modulesDir = Path.Combine(Environment.CurrentDirectory, "lux_modules");
+        if (Directory.Exists(modulesDir)) runtime.AddPackagePath(modulesDir);
+
+        if (!runtime.RegisterEmbeddedModule("lux:test", typeof(Program).Assembly, "test_runtime.lua"))
+        {
+            await Console.Error.WriteLineAsync("lux test: failed to register lux:test runtime module.");
+            try { Directory.Delete(outDir, recursive: true); } catch { }
+            return 1;
+        }
+
+        var runnerScript = BuildTestRunnerScript(compiledPaths, filter, quiet);
+        var ok = runtime.RunChunk(runnerScript, "<lux-test-runner>");
+
+        try { Directory.Delete(outDir, recursive: true); } catch { }
+        return ok ? 0 : 1;
+    }
+
+    private static List<string> DiscoverTestFiles(Config config, IEnumerable<string> sourceFiles)
+    {
+        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var f in sourceFiles)
+        {
+            var name = Path.GetFileName(f);
+            foreach (var pattern in config.Test.Patterns)
+            {
+                if (name.EndsWith(pattern, StringComparison.OrdinalIgnoreCase))
+                {
+                    result.Add(f);
+                    break;
+                }
+            }
+        }
+
+        foreach (var dir in config.Test.Dirs)
+        {
+            var fullDir = Path.IsPathRooted(dir)
+                ? dir
+                : Path.Combine(Environment.CurrentDirectory, dir);
+            if (!Directory.Exists(fullDir)) continue;
+            foreach (var f in Directory.EnumerateFiles(fullDir, "*.lux", SearchOption.AllDirectories))
+            {
+                if (f.EndsWith(".d.lux", StringComparison.OrdinalIgnoreCase)) continue;
+                result.Add(Path.GetFullPath(f));
+            }
+        }
+
+        return result.OrderBy(f => f, StringComparer.Ordinal).ToList();
+    }
+
+    private static string BuildTestRunnerScript(List<string> compiledLuaPaths, string? filter, bool quiet)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("local _T = require(\"lux:test\")");
+        if (quiet) sb.AppendLine("_T.__set_quiet(true)");
+        if (!string.IsNullOrEmpty(filter))
+            sb.AppendLine($"_T.__set_filter({EscapeLuaString(filter)})");
+
+        foreach (var path in compiledLuaPaths)
+        {
+            sb.AppendLine($"_T.__begin_file({EscapeLuaString(path)})");
+            sb.AppendLine($"dofile({EscapeLuaString(path)})");
+        }
+
+        sb.AppendLine("_T.__summary()");
+        sb.AppendLine("if _T.__results().failed > 0 then os.exit(1) end");
+        return sb.ToString();
+    }
+
+    private static string EscapeLuaString(string s)
+    {
+        return "\"" + s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n") + "\"";
+    }
+
+    #region lux repl
+
+    private static async Task<int> RunReplAsync(string[] args)
+    {
+        var configPath = Path.Combine(Environment.CurrentDirectory, "lux.toml");
+        var config = Config.LoadFromFile(configPath) ?? new Config();
+
+        LuxRuntime CreateRuntime()
+        {
+            var rt = new LuxRuntime();
+            var modulesDir = Path.Combine(Environment.CurrentDirectory, "lux_modules");
+            if (Directory.Exists(modulesDir)) rt.AddPackagePath(modulesDir);
+            return rt;
+        }
+
+        var runtime = CreateRuntime();
+        try
+        {
+            PrintReplHeader(config);
+
+            var buffer = new StringBuilder();
+            while (true)
+            {
+                Console.Write(buffer.Length == 0 ? "[36mlux>[0m " : "[2m...>[0m ");
+                var line = Console.ReadLine();
+                if (line == null)
+                {
+                    Console.WriteLine();
+                    break;
+                }
+
+                if (buffer.Length == 0 && line.TrimStart().StartsWith(':'))
+                {
+                    var (action, replacement) = HandleReplCommand(line.Trim(), runtime, config);
+                    if (action == ReplCommandResult.Quit) break;
+                    if (action == ReplCommandResult.Reset)
+                    {
+                        runtime.Dispose();
+                        runtime = CreateRuntime();
+                        Console.WriteLine("REPL state cleared.");
+                    }
+                    if (replacement != null)
+                    {
+                        EvaluateRepl(runtime, config, replacement);
+                    }
+                    continue;
+                }
+
+                if (buffer.Length > 0) buffer.Append('\n');
+                buffer.Append(line);
+
+                if (IsReplInputIncomplete(buffer.ToString())) continue;
+
+                var input = buffer.ToString();
+                buffer.Clear();
+
+                if (string.IsNullOrWhiteSpace(input)) continue;
+
+                EvaluateRepl(runtime, config, input);
+            }
+        }
+        finally
+        {
+            runtime.Dispose();
+        }
+
+        return 0;
+    }
+
+    private static void PrintReplHeader(Config config)
+    {
+        var version = Assembly.GetExecutingAssembly().GetName().Version;
+        Console.WriteLine($"[1mLux REPL[0m {version?.ToString(3) ?? "0.0.0"} (target {config.Target}). Type [36m:help[0m for commands, [36m:quit[0m to exit.");
+        Console.WriteLine("[2mNote: top-level `local` declarations don't persist between inputs — use `name = ...` for globals.[0m");
+    }
+
+    private enum ReplCommandResult { Continue, Quit, Reset }
+
+    private static (ReplCommandResult Action, string? Replacement) HandleReplCommand(
+        string cmd, LuxRuntime runtime, Config config)
+    {
+        var parts = cmd.Split(' ', 2);
+        switch (parts[0])
+        {
+            case ":quit":
+            case ":exit":
+            case ":q":
+                return (ReplCommandResult.Quit, null);
+            case ":help":
+            case ":h":
+            case ":?":
+                PrintReplHelp();
+                return (ReplCommandResult.Continue, null);
+            case ":clear":
+                Console.Clear();
+                return (ReplCommandResult.Continue, null);
+            case ":reset":
+                return (ReplCommandResult.Reset, null);
+            case ":load":
+            case ":l":
+                if (parts.Length < 2)
+                {
+                    Console.Error.WriteLine("Usage: :load <path-to-.lux-file>");
+                    return (ReplCommandResult.Continue, null);
+                }
+                var path = parts[1].Trim().Trim('"');
+                if (!File.Exists(path))
+                {
+                    Console.Error.WriteLine($":load: file not found: {path}");
+                    return (ReplCommandResult.Continue, null);
+                }
+                try
+                {
+                    return (ReplCommandResult.Continue, File.ReadAllText(path));
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($":load: {ex.Message}");
+                    return (ReplCommandResult.Continue, null);
+                }
+            default:
+                Console.Error.WriteLine($"Unknown REPL command: {parts[0]}. Type :help for available commands.");
+                return (ReplCommandResult.Continue, null);
+        }
+    }
+
+    private static void PrintReplHelp()
+    {
+        Console.WriteLine("REPL commands:");
+        Console.WriteLine("  :help, :h        Show this help");
+        Console.WriteLine("  :quit, :q        Exit the REPL");
+        Console.WriteLine("  :clear           Clear the screen");
+        Console.WriteLine("  :reset           Drop all defined globals (fresh runtime)");
+        Console.WriteLine("  :load <path>     Read and evaluate a .lux file in this session");
+        Console.WriteLine();
+        Console.WriteLine("Tips:");
+        Console.WriteLine("  • A bare expression like `2 + 2` prints its value automatically.");
+        Console.WriteLine("  • Use `name = ...` (no `local`) to define a global that survives.");
+        Console.WriteLine("  • Multi-line input continues until brackets/blocks balance.");
+    }
+
+    private static void EvaluateRepl(LuxRuntime runtime, Config config, string input)
+    {
+        config.ReplMode = true;
+        if (TryCompileLuxToLua("return " + input, config, out var luaExpr, out _))
+        {
+            var wrapped = "do local __r = (function() " + luaExpr + " end)(); if __r ~= nil then print(__r) end end";
+            runtime.RunChunk(wrapped, "<repl>");
+            return;
+        }
+
+        if (TryCompileLuxToLua(input, config, out var luaStmt, out var stmtErrors))
+        {
+            runtime.RunChunk(luaStmt, "<repl>");
+            return;
+        }
+
+        foreach (var err in stmtErrors)
+            Console.Error.WriteLine(err);
+    }
+
+    private static bool TryCompileLuxToLua(string source, Config config,
+        out string luaSource, out List<string> errors)
+    {
+        luaSource = "";
+        errors = [];
+        var compiler = new LuxCompiler { Config = config };
+        compiler.AddRawSource(source);
+        if (!compiler.Compile())
+        {
+            errors = compiler.Diagnostics.Diagnostics.Select(d => d.ToString()).ToList();
+            return false;
+        }
+
+        foreach (var pkg in compiler.Packages.Values)
+        {
+            foreach (var file in pkg.Files)
+            {
+                if (!string.IsNullOrEmpty(file.GeneratedLua))
+                {
+                    luaSource = file.GeneratedLua;
+                    return true;
+                }
+            }
+        }
+
+        errors = ["compiler produced no Lua output"];
+        return false;
+    }
+
+    /// <summary>
+    /// Cheap heuristic that decides whether a REPL input chunk is still open
+    /// (more lines need to come) by walking the lex tokens and counting how many
+    /// block-openers are unmatched. Counts <c>function/do/if/for/while/match/class/
+    /// interface/enum/module/repeat</c> against <c>end/until</c>, plus
+    /// <c>(</c>/<c>)</c>, <c>[</c>/<c>]</c>, <c>{</c>/<c>}</c>.
+    /// </summary>
+    private static bool IsReplInputIncomplete(string source)
+    {
+        try
+        {
+            var input = new Antlr4.Runtime.AntlrInputStream(source);
+            var lexer = new LuxLexer(input);
+            lexer.RemoveErrorListeners();
+            var stream = new Antlr4.Runtime.CommonTokenStream(lexer);
+            stream.Fill();
+
+            var blockDepth = 0;
+            var parens = 0;
+            var brackets = 0;
+            var braces = 0;
+            foreach (var tok in stream.GetTokens())
+            {
+                switch (tok.Type)
+                {
+                    case LuxLexer.FUNCTION:
+                    case LuxLexer.DO:
+                    case LuxLexer.IF:
+                    case LuxLexer.FOR:
+                    case LuxLexer.WHILE:
+                    case LuxLexer.MATCH:
+                    case LuxLexer.CLASS:
+                    case LuxLexer.INTERFACE:
+                    case LuxLexer.ENUM:
+                    case LuxLexer.MODULE:
+                    case LuxLexer.REPEAT:
+                        blockDepth++; break;
+                    case LuxLexer.END:
+                    case LuxLexer.UNTIL:
+                        blockDepth--; break;
+                    case LuxLexer.LPAREN: parens++; break;
+                    case LuxLexer.RPAREN: parens--; break;
+                    case LuxLexer.LBRACK: brackets++; break;
+                    case LuxLexer.RBRACK: brackets--; break;
+                    case LuxLexer.LBRACE: braces++; break;
+                    case LuxLexer.RBRACE: braces--; break;
+                }
+            }
+            return blockDepth > 0 || parens > 0 || brackets > 0 || braces > 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    #endregion
+
+    #region lux compile
+
+    private static async Task<int> RunCompileAsync(string[] args)
+    {
+        string? outPath = null;
+        string? appName = null;
+        string? targetRid = null;
+        var aot = false;
+        var keepBuild = false;
+
+        for (var i = 0; i < args.Length; i++)
+        {
+            switch (args[i])
+            {
+                case "--out":
+                    if (i + 1 >= args.Length) { await Console.Error.WriteLineAsync("error: --out needs a path"); return 1; }
+                    outPath = args[++i]; break;
+                case "--name":
+                    if (i + 1 >= args.Length) { await Console.Error.WriteLineAsync("error: --name needs a value"); return 1; }
+                    appName = args[++i]; break;
+                case "--target":
+                    if (i + 1 >= args.Length) { await Console.Error.WriteLineAsync("error: --target needs a RID"); return 1; }
+                    targetRid = args[++i]; break;
+                case "--aot": aot = true; break;
+                case "--keep-build": keepBuild = true; break;
+                default:
+                    await Console.Error.WriteLineAsync($"error: unknown arg '{args[i]}'");
+                    return 1;
+            }
+        }
+
+        if (!await DetectDotnetSdkAsync())
+        {
+            await Console.Error.WriteLineAsync("error: dotnet SDK not found in PATH. Install .NET 10+ to compile Lux binaries.");
+            return 1;
+        }
+
+        var configPath = Path.Combine(Environment.CurrentDirectory, "lux.toml");
+        var config = Config.LoadFromFile(configPath) ?? new Config();
+
+        var srcDir = Path.Combine(Environment.CurrentDirectory, config.Source);
+        if (!Directory.Exists(srcDir))
+        {
+            await Console.Error.WriteLineAsync($"error: source directory '{config.Source}' not found.");
+            return 1;
+        }
+
+        var sourceFiles = Directory.GetFiles(srcDir, "*.lux", SearchOption.AllDirectories)
+            .Where(f => !f.EndsWith(".d.lux", StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+        if (sourceFiles.Length == 0)
+        {
+            await Console.Error.WriteLineAsync($"error: no .lux files in '{config.Source}'.");
+            return 1;
+        }
+
+        Console.WriteLine($"[1/5] Compiling {sourceFiles.Length} Lux file(s)…");
+        var compiler = new LuxCompiler { Config = config };
+        foreach (var f in sourceFiles) compiler.AddSource(f);
+        if (!compiler.Compile())
+        {
+            foreach (var d in compiler.Diagnostics.Diagnostics)
+                await Console.Error.WriteLineAsync(d.ToString());
+            return 1;
+        }
+
+        var nativeIssues = DetectNativeDeps();
+        if (nativeIssues.Count > 0)
+        {
+            await Console.Error.WriteLineAsync("error: standalone binary cannot bundle native modules:");
+            foreach (var p in nativeIssues) await Console.Error.WriteLineAsync($"  • {p}");
+            await Console.Error.WriteLineAsync("Remove the offending package or use 'lux run' instead.");
+            return 1;
+        }
+
+        var entryModule = ResolveEntryModule(config, srcDir);
+        if (entryModule == null)
+        {
+            await Console.Error.WriteLineAsync(
+                "error: cannot determine entry. Set [entry] in lux.toml or add src/main.lux or src/index.lux.");
+            return 1;
+        }
+
+        appName ??= !string.IsNullOrEmpty(config.Name) ? config.Name : Path.GetFileNameWithoutExtension(entryModule);
+        appName = SanitizeAppName(appName);
+        targetRid ??= RuntimeInformation.RuntimeIdentifier;
+
+        if (targetRid != RuntimeInformation.RuntimeIdentifier)
+        {
+            await Console.Error.WriteLineAsync(
+                $"warning: --target {targetRid} is requested but cross-compile from " +
+                $"{RuntimeInformation.RuntimeIdentifier} may need additional .NET workloads.");
+        }
+
+        var outExt = targetRid.StartsWith("win", StringComparison.OrdinalIgnoreCase) ? ".exe" : "";
+        outPath ??= Path.Combine(Environment.CurrentDirectory, appName + outExt);
+        outPath = Path.GetFullPath(outPath);
+
+        Console.WriteLine($"[2/5] Bundle target: {appName}{outExt} for {targetRid}{(aot ? " (AOT — experimental)" : "")}");
+
+        var modules = CollectBundleModules(compiler, srcDir);
+        if (modules.Count == 0)
+        {
+            await Console.Error.WriteLineAsync("error: compilation produced no bundle-able modules.");
+            return 1;
+        }
+        if (!modules.Any(m => m.ModuleName == entryModule))
+        {
+            await Console.Error.WriteLineAsync(
+                $"error: entry module '{entryModule}' was not produced by the compiler. " +
+                "Bundle aborted.");
+            return 1;
+        }
+
+        var tempDir = Path.Combine(Path.GetTempPath(), "lux-compile-" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(Path.Combine(tempDir, "resources"));
+
+        foreach (var m in modules)
+        {
+            var path = Path.Combine(tempDir, m.PhysicalName);
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            await File.WriteAllTextAsync(path, m.LuaSource);
+        }
+
+        var luxRuntimePath = ResolveLuxRuntimePath();
+        if (luxRuntimePath == null)
+        {
+            await Console.Error.WriteLineAsync(
+                "error: cannot locate Lux.Runtime.dll next to the running lux binary. " +
+                "If running from source, build the solution first ('dotnet build Lux.sln'). " +
+                "If running a published binary, make sure the archive was fully extracted.");
+            try { Directory.Delete(tempDir, true); } catch { }
+            return 1;
+        }
+
+        WriteLauncherCsproj(tempDir, appName, targetRid, aot, luxRuntimePath, modules);
+        WriteLauncherProgram(tempDir, modules, entryModule);
+
+        Console.WriteLine($"[3/5] Bundling {modules.Count} module(s) and publishing (this may take a while)…");
+        var publishOk = await RunDotnetPublishAsync(tempDir, targetRid);
+        if (!publishOk)
+        {
+            await Console.Error.WriteLineAsync("error: dotnet publish failed.");
+            if (keepBuild) await Console.Error.WriteLineAsync($"keep-build: temp dir at {tempDir}");
+            else try { Directory.Delete(tempDir, true); } catch { }
+            return 1;
+        }
+
+        Console.WriteLine("[4/5] Copying binary to output path…");
+        var publishedFile = Path.Combine(tempDir, "bin", "Release", "net10.0", targetRid, "publish", appName + outExt);
+        if (!File.Exists(publishedFile))
+        {
+            await Console.Error.WriteLineAsync($"error: published file not found at {publishedFile}");
+            if (keepBuild) await Console.Error.WriteLineAsync($"keep-build: temp dir at {tempDir}");
+            else try { Directory.Delete(tempDir, true); } catch { }
+            return 1;
+        }
+        File.Copy(publishedFile, outPath, overwrite: true);
+        if (!targetRid.StartsWith("win", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                File.SetUnixFileMode(outPath,
+                    UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+                    UnixFileMode.GroupRead | UnixFileMode.GroupExecute |
+                    UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
+            }
+            catch { /* best-effort */ }
+        }
+
+        if (!keepBuild)
+        {
+            try { Directory.Delete(tempDir, true); } catch { }
+        }
+        else
+        {
+            Console.WriteLine($"keep-build: temp dir retained at {tempDir}");
+        }
+
+        var size = new FileInfo(outPath).Length / 1024.0 / 1024.0;
+        Console.WriteLine($"[5/5] Done — {appName}{outExt} ({size:0.0} MB) → {outPath}");
+        return 0;
+    }
+
+    private readonly record struct BundleModule(string ModuleName, string LogicalName, string PhysicalName, string LuaSource);
+
+    /// <summary>
+    /// Locates the Lux.Runtime.dll that ships alongside the running <c>lux</c>
+    /// binary. <see cref="System.Reflection.Assembly.Location"/> returns an empty
+    /// string when the assembly is embedded in a SingleFile bundle (warning
+    /// IL3000), so we fall back to <see cref="AppContext.BaseDirectory"/> — which
+    /// in self-extracting SingleFile mode is the directory where all assemblies
+    /// have been extracted to disk on first launch.
+    /// </summary>
+    private static string? ResolveLuxRuntimePath()
+    {
+        var direct = typeof(LuxRuntime).Assembly.Location;
+        if (!string.IsNullOrEmpty(direct) && File.Exists(direct)) return direct;
+
+        var beside = Path.Combine(AppContext.BaseDirectory, "Lux.Runtime.dll");
+        if (File.Exists(beside)) return beside;
+
+        return null;
+    }
+
+    private static List<BundleModule> CollectBundleModules(LuxCompiler compiler, string srcDir)
+    {
+        var result = new List<BundleModule>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var modulesDir = Path.GetFullPath(Path.Combine(Environment.CurrentDirectory, "lux_modules"));
+        var normalizedSrc = Path.GetFullPath(srcDir);
+
+        foreach (var pkg in compiler.Packages.Values)
+        {
+            foreach (var file in pkg.Files)
+            {
+                if (string.IsNullOrEmpty(file.GeneratedLua)) continue;
+                if (file.Filename == null) continue;
+                if (!file.Filename.EndsWith(".lux", StringComparison.OrdinalIgnoreCase)) continue;
+                if (file.Filename.EndsWith(".d.lux", StringComparison.OrdinalIgnoreCase)) continue;
+
+                var moduleName = ModuleNameFor(file.Filename, normalizedSrc, modulesDir);
+                if (moduleName == null) continue;
+                if (!seen.Add(moduleName)) continue;
+
+                var logicalName = moduleName + ".lua";
+                var physicalName = "resources/" + moduleName.Replace('/', '_') + ".lua";
+                result.Add(new BundleModule(moduleName, logicalName, physicalName, file.GeneratedLua));
+            }
+        }
+
+        // Pre-built .lua files inside lux_modules/ (not produced by LuxCompiler).
+        // These are how pure-Lua packages or pre-compiled Lux packages ship.
+        if (Directory.Exists(modulesDir))
+        {
+            foreach (var luaPath in Directory.EnumerateFiles(modulesDir, "*.lua", SearchOption.AllDirectories))
+            {
+                var moduleName = ModuleNameFor(luaPath, normalizedSrc, modulesDir);
+                if (moduleName == null) continue;
+                if (!seen.Add(moduleName)) continue;
+
+                string luaSource;
+                try { luaSource = File.ReadAllText(luaPath); }
+                catch { continue; }
+
+                var logicalName = moduleName + ".lua";
+                var physicalName = "resources/" + moduleName.Replace('/', '_') + ".lua";
+                result.Add(new BundleModule(moduleName, logicalName, physicalName, luaSource));
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Maps a source file path to the Lua module name that <c>require(...)</c> would use.
+    /// Files under <paramref name="srcDir"/> use their relative path; files inside
+    /// <c>lux_modules/&lt;pkg&gt;/</c> become <c>&lt;pkg&gt;</c> (for init.lua / init.lux) or
+    /// <c>&lt;pkg&gt;/&lt;rel&gt;</c>. Returns null for files outside both roots.
+    /// </summary>
+    private static string? ModuleNameFor(string filePath, string srcDir, string modulesDir)
+    {
+        var full = Path.GetFullPath(filePath);
+        if (full.StartsWith(srcDir + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
+            || full.Equals(srcDir, StringComparison.OrdinalIgnoreCase))
+        {
+            var rel = Path.GetRelativePath(srcDir, full).Replace('\\', '/');
+            return StripLuxOrLuaExt(rel);
+        }
+
+        if (full.StartsWith(modulesDir + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+        {
+            var rel = Path.GetRelativePath(modulesDir, full).Replace('\\', '/');
+            // rel = "<pkg>/<sub-path>.lua" → split off pkg, then strip init.
+            var slash = rel.IndexOf('/');
+            if (slash < 0) return null;
+            var pkg = rel[..slash];
+            var inner = StripLuxOrLuaExt(rel[(slash + 1)..]);
+            if (inner == "init" || string.IsNullOrEmpty(inner)) return pkg;
+            return pkg + "/" + inner;
+        }
+
+        return null;
+    }
+
+    private static string StripLuxOrLuaExt(string rel)
+    {
+        if (rel.EndsWith(".lux", StringComparison.OrdinalIgnoreCase)) return rel[..^4];
+        if (rel.EndsWith(".lua", StringComparison.OrdinalIgnoreCase)) return rel[..^4];
+        return rel;
+    }
+
+    private static async Task<bool> DetectDotnetSdkAsync()
+    {
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "dotnet",
+                Arguments = "--version",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+            };
+            using var p = Process.Start(psi);
+            if (p == null) return false;
+            await p.WaitForExitAsync();
+            return p.ExitCode == 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static List<string> DetectNativeDeps()
+    {
+        var hits = new List<string>();
+        var dir = Path.Combine(Environment.CurrentDirectory, "lux_modules");
+        if (!Directory.Exists(dir)) return hits;
+        foreach (var p in Directory.EnumerateFiles(dir, "*.*", SearchOption.AllDirectories))
+        {
+            var ext = Path.GetExtension(p).ToLowerInvariant();
+            if (ext is ".so" or ".dll" or ".dylib") hits.Add(p);
+        }
+        return hits;
+    }
+
+    private static string? ResolveEntryModule(Config config, string srcDir)
+    {
+        string? entryFile = null;
+        if (!string.IsNullOrEmpty(config.Entry))
+        {
+            var candidate = Path.Combine(srcDir, config.Entry);
+            if (!Path.HasExtension(candidate)) candidate += ".lux";
+            if (File.Exists(candidate)) entryFile = candidate;
+        }
+        else
+        {
+            foreach (var c in new[] { "main.lux", "index.lux" })
+            {
+                var p = Path.Combine(srcDir, c);
+                if (File.Exists(p)) { entryFile = p; break; }
+            }
+        }
+        if (entryFile == null) return null;
+        var rel = Path.GetRelativePath(srcDir, entryFile).Replace('\\', '/');
+        return rel.EndsWith(".lux", StringComparison.OrdinalIgnoreCase) ? rel[..^4] : rel;
+    }
+
+    private static string SanitizeAppName(string name)
+    {
+        var sb = new StringBuilder();
+        foreach (var c in name)
+        {
+            if (char.IsLetterOrDigit(c) || c == '-' || c == '_') sb.Append(c);
+            else sb.Append('_');
+        }
+        var r = sb.ToString();
+        if (r.Length == 0 || char.IsDigit(r[0])) r = "app_" + r;
+        return r;
+    }
+
+    private static void WriteLauncherCsproj(
+        string tempDir, string appName, string rid, bool aot,
+        string luxRuntimeDll, List<BundleModule> modules)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("<Project Sdk=\"Microsoft.NET.Sdk\">");
+        sb.AppendLine("  <PropertyGroup>");
+        sb.AppendLine("    <OutputType>Exe</OutputType>");
+        sb.AppendLine("    <TargetFramework>net10.0</TargetFramework>");
+        sb.AppendLine("    <Nullable>enable</Nullable>");
+        sb.AppendLine("    <ImplicitUsings>enable</ImplicitUsings>");
+        sb.AppendLine($"    <AssemblyName>{appName}</AssemblyName>");
+        sb.AppendLine($"    <RuntimeIdentifier>{rid}</RuntimeIdentifier>");
+        sb.AppendLine("    <SelfContained>true</SelfContained>");
+        if (aot)
+        {
+            sb.AppendLine("    <PublishAot>true</PublishAot>");
+        }
+        else
+        {
+            sb.AppendLine("    <PublishSingleFile>true</PublishSingleFile>");
+            sb.AppendLine("    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>");
+            sb.AppendLine("    <InvariantGlobalization>true</InvariantGlobalization>");
+        }
+        sb.AppendLine("  </PropertyGroup>");
+        sb.AppendLine("  <ItemGroup>");
+        sb.AppendLine($"    <Reference Include=\"Lux.Runtime\"><HintPath>{luxRuntimeDll}</HintPath></Reference>");
+        sb.AppendLine("    <PackageReference Include=\"KeraLua\" Version=\"1.4.9\" />");
+        sb.AppendLine("  </ItemGroup>");
+        sb.AppendLine("  <ItemGroup>");
+        foreach (var m in modules)
+        {
+            sb.AppendLine($"    <EmbeddedResource Include=\"{m.PhysicalName}\" LogicalName=\"{m.LogicalName}\" />");
+        }
+        sb.AppendLine("  </ItemGroup>");
+        sb.AppendLine("</Project>");
+        File.WriteAllText(Path.Combine(tempDir, "Launcher.csproj"), sb.ToString());
+    }
+
+    private static void WriteLauncherProgram(string tempDir, List<BundleModule> modules, string entryModule)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("using Lux.Runtime;");
+        sb.AppendLine();
+        sb.AppendLine("internal static class Program");
+        sb.AppendLine("{");
+        sb.AppendLine("    private static readonly (string Module, string Resource)[] _modules = new[]");
+        sb.AppendLine("    {");
+        foreach (var m in modules)
+        {
+            sb.AppendLine($"        (\"{EscapeCSharp(m.ModuleName)}\", \"{EscapeCSharp(m.LogicalName)}\"),");
+        }
+        sb.AppendLine("    };");
+        sb.AppendLine();
+        sb.AppendLine($"    private const string EntryModule = \"{EscapeCSharp(entryModule)}\";");
+        sb.AppendLine();
+        sb.AppendLine("    public static int Main(string[] args)");
+        sb.AppendLine("    {");
+        sb.AppendLine("        using var rt = new LuxRuntime();");
+        sb.AppendLine("        var asm = typeof(Program).Assembly;");
+        sb.AppendLine("        foreach (var (mod, res) in _modules)");
+        sb.AppendLine("        {");
+        sb.AppendLine("            if (!rt.RegisterEmbeddedModule(mod, asm, res))");
+        sb.AppendLine("            {");
+        sb.AppendLine("                Console.Error.WriteLine($\"failed to register module {mod}\");");
+        sb.AppendLine("                return 1;");
+        sb.AppendLine("            }");
+        sb.AppendLine("        }");
+        sb.AppendLine();
+        sb.AppendLine("        if (args.Length > 0)");
+        sb.AppendLine("        {");
+        sb.AppendLine("            var quoted = string.Join(\", \", args.Select(a => \"\\\"\" + a.Replace(\"\\\\\", \"\\\\\\\\\").Replace(\"\\\"\", \"\\\\\\\"\") + \"\\\"\"));");
+        sb.AppendLine("            rt.RunChunk(\"arg = { \" + quoted + \" }\", \"<args>\");");
+        sb.AppendLine("        }");
+        sb.AppendLine();
+        sb.AppendLine("        return rt.RequireAndRun(EntryModule) ? 0 : 1;");
+        sb.AppendLine("    }");
+        sb.AppendLine("}");
+        File.WriteAllText(Path.Combine(tempDir, "Program.cs"), sb.ToString());
+    }
+
+    private static string EscapeCSharp(string s)
+        => s.Replace("\\", "\\\\").Replace("\"", "\\\"");
+
+    private static async Task<bool> RunDotnetPublishAsync(string projDir, string rid)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = "dotnet",
+            Arguments = $"publish Launcher.csproj -c Release -r {rid} --nologo -v quiet",
+            WorkingDirectory = projDir,
+            UseShellExecute = false,
+        };
+        using var p = Process.Start(psi);
+        if (p == null) return false;
+        await p.WaitForExitAsync();
+        return p.ExitCode == 0;
+    }
+
+    #endregion
+
+    private static async Task<int> RunInstallAsync(string[] args)
+    {
+        var frozen = args.Contains("--frozen");
+        var offline = args.Contains("--offline");
+        var noDev = args.Contains("--no-dev") || args.Contains("--production");
+        var noCache = args.Contains("--no-cache");
+        var (allowAll, allowList) = ParseAllowScripts(args);
+
+        var configPath = Path.Combine(Environment.CurrentDirectory, "lux.toml");
+        var config = Config.LoadFromFile(configPath);
+        if (config == null)
+        {
+            await Console.Error.WriteLineAsync("error: lux.toml not found in current directory. Run 'lux init' first.");
+            return 1;
+        }
+
+        var installer = new Installer();
+        return await installer.InstallAsync(config, Environment.CurrentDirectory, new InstallOptions
+        {
+            Frozen = frozen,
+            Offline = offline,
+            IncludeDev = !noDev,
+            NoRegistryCache = noCache,
+            AllowAllScripts = allowAll || config.Install.AllowScripts,
+            AllowedScriptPackages = allowList,
+        });
+    }
+
+    private static async Task<int> RunCreateAsync(string[] args)
+    {
+        string? spec = null;
+        string? dir = null;
+        var skipSetup = false;
+        var offline = false;
+        var noCache = false;
+
+        foreach (var a in args)
+        {
+            switch (a)
+            {
+                case "--skip-setup": skipSetup = true; break;
+                case "--offline": offline = true; break;
+                case "--no-cache": noCache = true; break;
+                default:
+                    if (a.StartsWith("--"))
+                    {
+                        await Console.Error.WriteLineAsync($"error: unknown flag '{a}'");
+                        return 1;
+                    }
+                    if (spec == null) spec = a;
+                    else if (dir == null) dir = a;
+                    else
+                    {
+                        await Console.Error.WriteLineAsync($"error: unexpected argument '{a}'");
+                        return 1;
+                    }
+                    break;
+            }
+        }
+
+        if (spec == null)
+        {
+            await Console.Error.WriteLineAsync("error: missing template specifier. Usage: lux create <spec_or_url> [dir]");
+            return 1;
+        }
+
+        var creator = new ProjectCreator();
+        return await creator.CreateAsync(spec, new CreateOptions
+        {
+            TargetDirectory = dir,
+            SkipSetup = skipSetup,
+            NoRegistryCache = noCache,
+            Offline = offline,
+        });
+    }
+
+    private static async Task<int> RunRegistryAsync(string[] args)
+    {
+        var sub = args.Length > 0 ? args[0].ToLowerInvariant() : "";
+        switch (sub)
+        {
+            case "refresh":
+                try
+                {
+                    await Registry.RefreshAsync();
+                    Console.WriteLine($"Registry index refreshed from {Registry.EffectiveUrl()}.");
+                    return 0;
+                }
+                catch (Exception ex)
+                {
+                    await Console.Error.WriteLineAsync($"error: {ex.Message}");
+                    return 1;
+                }
+            default:
+                await Console.Error.WriteLineAsync("Usage: lux registry refresh");
+                return 1;
+        }
+    }
+
+    /// <summary>
+    /// Parses <c>--allow-scripts</c> (allow all) and <c>--allow-scripts=pkg1,pkg2</c> (allow-list).
+    /// Returns <c>(allowAll, allowedSet)</c>; <c>allowedSet</c> is empty when not specified.
+    /// </summary>
+    private static (bool AllowAll, HashSet<string> Allowed) ParseAllowScripts(string[] args)
+    {
+        var allowAll = false;
+        var allowed = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var a in args)
+        {
+            if (a == "--allow-scripts") allowAll = true;
+            else if (a.StartsWith("--allow-scripts=", StringComparison.Ordinal))
+            {
+                var rhs = a["--allow-scripts=".Length..];
+                foreach (var name in rhs.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                    allowed.Add(name);
+            }
+        }
+        return (allowAll, allowed);
+    }
+
+    private static async Task<int> RunAddAsync(string[] args)
+    {
+        var group = DependencyGroup.Runtime;
+        string? spec = null;
+        var (allowAll, allowList) = ParseAllowScripts(args);
+        var noCache = args.Contains("--no-cache");
+        foreach (var a in args)
+        {
+            switch (a)
+            {
+                case "--dev": group = DependencyGroup.Dev; break;
+                case "--peer": group = DependencyGroup.Peer; break;
+                case "--allow-scripts": break;
+                case "--no-cache": break;
+                default:
+                    if (a.StartsWith("--allow-scripts=", StringComparison.Ordinal)) break;
+                    if (spec == null) spec = a;
+                    else
+                    {
+                        await Console.Error.WriteLineAsync($"error: unexpected argument '{a}'");
+                        return 1;
+                    }
+                    break;
+            }
+        }
+
+        if (spec == null)
+        {
+            await Console.Error.WriteLineAsync("error: missing package specifier. Usage: lux add <spec> [--dev|--peer]");
+            return 1;
+        }
+
+        var configPath = Path.Combine(Environment.CurrentDirectory, "lux.toml");
+        var config = Config.LoadFromFile(configPath);
+        if (config == null)
+        {
+            await Console.Error.WriteLineAsync("error: lux.toml not found in current directory. Run 'lux init' first.");
+            return 1;
+        }
+
+        var installer = new Installer();
+        return await installer.AddAsync(spec, config, Environment.CurrentDirectory, configPath, group, new InstallOptions
+        {
+            NoRegistryCache = noCache,
+            AllowAllScripts = allowAll || config.Install.AllowScripts,
+            AllowedScriptPackages = allowList,
+        });
+    }
+
+    private static async Task<int> RunRemoveAsync(string[] args)
+    {
+        if (args.Length == 0)
+        {
+            await Console.Error.WriteLineAsync("error: missing package name. Usage: lux remove <name>");
+            return 1;
+        }
+        var name = args[0];
+
+        var configPath = Path.Combine(Environment.CurrentDirectory, "lux.toml");
+        var config = Config.LoadFromFile(configPath);
+        if (config == null)
+        {
+            await Console.Error.WriteLineAsync("error: lux.toml not found in current directory.");
+            return 1;
+        }
+
+        var installer = new Installer();
+        return await installer.RemoveAsync(name, config, Environment.CurrentDirectory, configPath, new InstallOptions());
+    }
+
+    private static int RunUnknown(string command)
+    {
+        Console.Error.WriteLine($"Unknown command: {command}");
+        Console.Error.WriteLine("Run 'lux help' for available commands.");
+        return 1;
+    }
+
+    private static bool RunScripts(List<string> scripts, string phase)
+    {
+        foreach (var script in scripts)
+        {
+            Console.WriteLine($"[{phase}] {script}");
+            var psi = new ProcessStartInfo
+            {
+                FileName = OperatingSystem.IsWindows() ? "cmd" : "sh",
+                Arguments = OperatingSystem.IsWindows() ? $"/c {script}" : $"-c \"{script}\"",
+                WorkingDirectory = Environment.CurrentDirectory,
+                UseShellExecute = false
+            };
+
+            using var proc = Process.Start(psi);
+            if (proc == null)
+            {
+                Console.Error.WriteLine($"[{phase}] Failed to start: {script}");
+                return false;
+            }
+
+            proc.WaitForExit();
+            if (proc.ExitCode != 0)
+            {
+                Console.Error.WriteLine($"[{phase}] Script exited with code {proc.ExitCode}: {script}");
+                return false;
+            }
+        }
+        return true;
+    }
+}

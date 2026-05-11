@@ -1,0 +1,36 @@
+{
+  "comments": {
+    "lineComment": "--",
+    "blockComment": ["--[[", "]]"]
+  },
+  "brackets": [
+    ["{", "}"],
+    ["[", "]"],
+    ["(", ")"]
+  ],
+  "autoClosingPairs": [
+    { "open": "{", "close": "}" },
+    { "open": "[", "close": "]" },
+    { "open": "(", "close": ")" },
+    { "open": "\"", "close": "\"", "notIn": ["string"] },
+    { "open": "'", "close": "'", "notIn": ["string"] }
+  ],
+  "surroundingPairs": [
+    ["{", "}"],
+    ["[", "]"],
+    ["(", ")"],
+    ["\"", "\""],
+    ["'", "'"]
+  ],
+  "folding": {
+    "markers": {
+      "start": "^\\s*--\\s*region\\b",
+      "end": "^\\s*--\\s*endregion\\b"
+    }
+  },
+  "wordPattern": "[a-zA-Z_]\\w*",
+  "indentationRules": {
+    "increaseIndentPattern": "^\\s*(else|elseif|for|function|if|repeat|while|do|class|interface|enum|match|case|module|declare\\s+(class|interface|module|enum))\\b.*$|^\\s*(local\\s+)?(async\\s+)?function\\b.*$|\\{\\s*$|\\(\\s*$",
+    "decreaseIndentPattern": "^\\s*(end|else|elseif|until|\\}|\\))\\s*$"
+  }
+}

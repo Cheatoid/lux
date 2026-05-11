@@ -1,0 +1,21 @@
+-- Filesystem helpers. Accessible as the global `fs`.
+
+declare fs: {
+    readFile: (string) -> string,
+    writeFile: (string, string) -> nil,
+    appendFile: (string, string) -> nil,
+    exists: (string) -> boolean,
+    isFile: (string) -> boolean,
+    isDir: (string) -> boolean,
+    mkdir: (string) -> nil,
+    remove: (string) -> nil,
+    copy: (string, string) -> nil,
+    move: (string, string) -> nil,
+    listFiles: (string, string?) -> string[],
+    listDirs: (string) -> string[],
+    cwd: () -> string,
+    join: (string, string) -> string,
+    basename: (string) -> string,
+    dirname: (string) -> string,
+    extname: (string) -> string,
+}

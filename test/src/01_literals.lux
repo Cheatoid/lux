@@ -1,0 +1,23 @@
+import { section, expectEq, expect } from "_runner"
+
+export function run(): nil
+    section("literals")
+
+    expectEq("nil literal", nil, nil)
+    expectEq("true literal", true, true)
+    expectEq("false literal", false, false)
+
+    expectEq("decimal int", 42, 42)
+    expectEq("negative int", -7, -7)
+    expectEq("decimal float", 3.5, 3.5)
+    expectEq("scientific float", 1e3, 1000)
+    expectEq("hex literal", 0xFF, 255)
+    expectEq("hex with prefix", 0x10, 16)
+
+    expectEq("dq string", "hello", "hello")
+    expectEq("sq string", 'world', "world")
+    expectEq("escape \\n", "a\nb" == "a\nb", true)
+    expectEq("escape \\t", "x\ty" == "x\ty", true)
+
+    -- The vararg literal `...` is exercised in 05_functions.
+end

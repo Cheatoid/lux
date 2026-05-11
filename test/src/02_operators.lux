@@ -1,0 +1,49 @@
+import { section, expectEq, expect, expectNear } from "_runner"
+
+export function run(): nil
+    section("operators")
+
+    -- Arithmetic
+    expectEq("add", 2 + 3, 5)
+    expectEq("sub", 10 - 4, 6)
+    expectEq("mul", 6 * 7, 42)
+    expectEq("div float", 7 / 2, 3.5)
+    expectEq("floordiv", 7 // 2, 3)
+    expectEq("mod", 7 % 3, 1)
+    expectEq("power", 2 ^ 8, 256)
+    expectEq("unary minus", -(-5), 5)
+    expectEq("length op", #"hello", 5)
+
+    -- Concat (string)
+    expectEq("concat ..", "foo" .. "bar", "foobar")
+    expectEq("concat with number", "n=" .. 42, "n=42")
+
+    -- Comparison
+    expect("lt", 1 < 2)
+    expect("gt", 5 > 3)
+    expect("lte equal", 5 <= 5)
+    expect("gte equal", 7 >= 7)
+    expect("eq word", 3 == 3)
+    expect("neq lua-style", 1 ~= 2)
+    expect("neq alt", 1 != 2)
+
+    -- Logical (Lua-style and alt)
+    expectEq("and short-circuit", false and 1, false)
+    expectEq("and second value", true and 7, 7)
+    expectEq("or short-circuit", true or 1, true)
+    expectEq("or fallback", false or 9, 9)
+    expectEq("alt &&", true && 4, 4)
+    expectEq("alt ||", false || 5, 5)
+    expectEq("not word", not false, true)
+    expectEq("not !", !true, false)
+
+    -- Bitwise (Lua 5.3+)
+    expectEq("band", 0xF0 & 0x0F, 0)
+    expectEq("bor", 0x10 | 0x01, 0x11)
+    expectEq("bxor", 0xFF ~ 0x0F, 0xF0)
+    expectEq("lshift", 1 << 4, 16)
+    expectEq("rshift", 16 >> 2, 4)
+
+    -- Power and float precision
+    expectNear("sqrt-via-power", 2 ^ 0.5, 1.41421356, 1e-6)
+end

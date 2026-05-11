@@ -1,0 +1,4 @@
+name = "lua-math"
+version = "0.1.0"
+target = "5.4"
+generate_declarations = false

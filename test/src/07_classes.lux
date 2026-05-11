@@ -1,0 +1,148 @@
+import { section, expectEq, expect } from "_runner"
+
+class Animal
+    name: string
+    legs: number = 4
+
+    constructor(name: string)
+        self.name = name
+    end
+
+    function describe(): string
+        return self.name .. "/" .. tostring(self.legs)
+    end
+
+    function speak(): string
+        return "..."
+    end
+end
+
+class Cat extends Animal
+    constructor(name: string)
+        super(name)
+    end
+
+    override function speak(): string
+        return "meow"
+    end
+end
+
+abstract class Shape
+    abstract function area(): number
+
+    function describe(): string
+        return "shape with area " .. tostring(self:area())
+    end
+end
+
+class Square extends Shape
+    side: number = 0
+
+    constructor(side: number)
+        self.side = side
+    end
+
+    override function area(): number
+        return self.side * self.side
+    end
+end
+
+class Counter
+    protected count: number = 0
+    static globalCount: number = 0
+
+    function bump(): number
+        self.count = self.count + 1
+        Counter.globalCount = Counter.globalCount + 1
+        return self.count
+    end
+
+    function value(): number
+        return self.count
+    end
+end
+
+class Box
+    items: number[]
+
+    constructor()
+        self.items = {}
+    end
+
+    get size(): number
+        return #self.items
+    end
+
+    function push(n: number): nil
+        table.insert(self.items, n)
+    end
+end
+
+class Vec
+    x: number = 0
+    y: number = 0
+
+    constructor(x: number, y: number)
+        self.x = x
+        self.y = y
+    end
+
+    operator +(other: Vec): Vec
+        return new Vec(self.x + other.x, self.y + other.y)
+    end
+
+    operator ==(other: Vec): boolean
+        return self.x == other.x and self.y == other.y
+    end
+end
+
+export function run(): nil
+    section("classes")
+
+    -- Basic class with default field
+    local a = new Animal("Rex")
+    expectEq("class field assigned", a.name, "Rex")
+    expectEq("class default field", a.legs, 4)
+    expectEq("class method call", a:describe(), "Rex/4")
+
+    -- Inheritance + override + super
+    local cat = new Cat("Whiskers")
+    expectEq("inherited field via super", cat.name, "Whiskers")
+    expectEq("inherited method", cat:describe(), "Whiskers/4")
+    expectEq("override method", cat:speak(), "meow")
+    expectEq("base method via inherited", a:speak(), "...")
+
+    -- instanceof / typeof
+    expect("instanceof Animal", cat instanceof Animal)
+    expect("instanceof Cat", cat instanceof Cat)
+    expect("instanceof not Shape", not (cat instanceof Shape))
+
+    -- Abstract + override
+    local sq = new Square(5)
+    expectEq("abstract via override", sq:area(), 25)
+    expectEq("non-abstract uses self", sq:describe(), "shape with area 25")
+
+    -- Static + protected
+    local c1 = new Counter()
+    local c2 = new Counter()
+    expectEq("first bump c1", c1:bump(), 1)
+    expectEq("second bump c1", c1:bump(), 2)
+    expectEq("first bump c2", c2:bump(), 1)
+    expectEq("static field shared", Counter.globalCount, 3)
+    expectEq("instance value c1", c1:value(), 2)
+
+    -- Accessor (getter)
+    local b = new Box()
+    b:push(1)
+    b:push(2)
+    b:push(3)
+    expectEq("getter returns size", b.size, 3)
+
+    -- Operator overloading
+    local v1 = new Vec(1, 2)
+    local v2 = new Vec(3, 4)
+    local sum = v1 + v2
+    expectEq("operator + x", sum.x, 4)
+    expectEq("operator + y", sum.y, 6)
+    expect("operator ==", v1 == new Vec(1, 2))
+end

@@ -1,0 +1,64 @@
+import { section, expectEq, expect } from "_runner"
+
+enum Color
+    Red
+    Green
+    Blue
+end
+
+enum Status
+    Active = "ACTIVE"
+    Inactive = "INACTIVE"
+end
+
+export function run(): nil
+    section("tables")
+
+    -- Array-style table
+    local arr: number[] = { 10, 20, 30 }
+    expectEq("array len", #arr, 3)
+    expectEq("array index 1", arr[1], 10)
+    expectEq("array index 3", arr[3], 30)
+
+    arr[2] = 99
+    expectEq("array assign", arr[2], 99)
+
+    table.insert(arr, 40)
+    expectEq("table.insert appends", arr[4], 40)
+    expectEq("array len after insert", #arr, 4)
+
+    -- Map / struct-style table
+    local point = { x = 3, y = 4 }
+    expectEq("struct field x", point.x, 3)
+    expectEq("struct field y", point.y, 4)
+    point.x = 30
+    expectEq("struct field assign", point.x, 30)
+
+    -- Mixed table
+    local mixed = { 1, 2, 3, name = "ok" }
+    expectEq("mixed array part", mixed[2], 2)
+    expectEq("mixed map part", mixed.name, "ok")
+
+    -- Bracket key access
+    local dict = { ["one-two"] = 12 }
+    expectEq("bracket key", dict["one-two"], 12)
+
+    section("enums")
+
+    -- Auto-incremented enum
+    expectEq("enum auto Red", Color.Red, 0)
+    expectEq("enum auto Green", Color.Green, 1)
+    expectEq("enum auto Blue", Color.Blue, 2)
+
+    -- Explicit string enum
+    expectEq("enum string Active", Status.Active, "ACTIVE")
+    expectEq("enum string Inactive", Status.Inactive, "INACTIVE")
+
+    -- Enum value compare
+    local mut col = Color.Green
+    if col == Color.Green then
+        expect("enum equality narrowing", true)
+    else
+        expect("enum equality narrowing", false)
+    end
+end

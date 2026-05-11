@@ -1,0 +1,57 @@
+import { section, expectEq, expect } from "_runner"
+
+local mut log: string = ""
+
+local function logIt(msg: string): nil
+    log = log .. msg
+end
+
+local function withDeferCall(): string
+    log = ""
+    defer logIt("[end]")
+    logIt("[start]")
+    return log .. "..."
+end
+
+local function withDeferBlock(): nil
+    log = ""
+    defer do
+        logIt("[finish]")
+    end
+    logIt("[during]")
+end
+
+local function guardEarly(n: number): number
+    guard n > 0 else -1
+    return n * 2
+end
+
+local function guardWithVoidReturn(n: number): nil
+    log = ""
+    guard n > 0
+    logIt("ran-body")
+end
+
+export function run(): nil
+    section("defer / guard")
+
+    -- defer call form: function returns before deferred runs, but log captures it
+    log = ""
+    local mid: string = withDeferCall()
+    expectEq("defer call ran", log, "[start][end]")
+    expectEq("function return BEFORE defer log captured", mid, "[start]...")
+
+    -- defer block form
+    withDeferBlock()
+    expectEq("defer block ran", log, "[during][finish]")
+
+    -- guard with else (early-return)
+    expectEq("guard pass-through", guardEarly(5), 10)
+    expectEq("guard else branch", guardEarly(-1), -1)
+
+    -- guard in void function (just returns nil)
+    guardWithVoidReturn(3)
+    expectEq("guard void true → body ran", log, "ran-body")
+    guardWithVoidReturn(-1)
+    expectEq("guard void false → body skipped", log, "")
+end

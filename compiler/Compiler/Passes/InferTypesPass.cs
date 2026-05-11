@@ -1,0 +1,2471 @@
+using Lux.Configuration;
+using Lux.Diagnostics;
+using Lux.IR;
+using Type = Lux.IR.Type;
+
+namespace Lux.Compiler.Passes;
+
+/// <summary>
+/// The infer types pass is responsible for inferring the types of expressions in the source code. It takes care of
+/// inferring the types of variables, function return types, and other expressions based on their usage and context.
+/// </summary>
+public sealed class InferTypesPass() : Pass(PassName, PassScope.PerFile)
+{
+    public const string PassName = "InferTypes";
+    private int _asyncDepth;
+
+    /// <summary>
+    /// Identifies a value location for flow-narrowing. Either a plain symbol (NameExpr) or a chain of
+    /// non-optional dot accesses rooted at a symbol.
+    /// </summary>
+    private abstract record AccessPath;
+
+    private sealed record SymPath(SymID Sym) : AccessPath;
+
+    private sealed record FieldPath(AccessPath Base, string Field) : AccessPath;
+
+    /// <summary>
+    /// A single case in an exhaustive-match chain. Either a type test (`x is T`) or an enum member
+    /// equality test (`x == Enum.Member`).
+    /// </summary>
+    private abstract record MatchCase;
+
+    private sealed record TypeMatchCase(TypID TargetType) : MatchCase;
+
+    private sealed record EnumMemberMatchCase(TypID EnumTypeId, string Member) : MatchCase;
+
+    private readonly Dictionary<AccessPath, TypID> _narrowed = new();
+
+    public override bool Run(PassContext context)
+    {
+        if (context.Pkg == null || context.File == null)
+        {
+            return false;
+        }
+
+        _narrowed.Clear();
+
+        ResolveStmts(context, context.File.Hir.Body);
+
+        if (context.File.Hir.Return != null)
+        {
+            ResolveStmt(context, context.File.Hir.Return);
+        }
+
+        return true;
+    }
+
+    private void ResolveStmts(PassContext pc, List<Stmt> stmts)
+    {
+        for (var i = 0; i < stmts.Count; i++)
+        {
+            if (IsTerminator(stmts[i]) && i < stmts.Count - 1)
+            {
+                pc.Diag.Report(stmts[i + 1].Span, DiagnosticCode.WrnUnreachableCode);
+                break;
+            }
+        }
+
+        foreach (var stmt in stmts)
+        {
+            ResolveStmt(pc, stmt);
+        }
+    }
+
+    private void ResolveStmt(PassContext pc, Stmt stmt)
+    {
+        switch (stmt)
+        {
+            case Decl decl:
+                ResolveDecl(pc, decl);
+                break;
+            case AssignStmt assignStmt:
+                ResolveAssignStmt(pc, assignStmt);
+                break;
+            case ExprStmt exprStmt:
+                SynthesizeExpr(pc, exprStmt.Expression);
+                break;
+            case LabelStmt:
+            case BreakStmt:
+            case GotoStmt:
+                break;
+            case DoBlockStmt doBlockStmt:
+                ResolveStmts(pc, doBlockStmt.Body);
+                break;
+            case WhileStmt whileStmt:
+                SynthesizeExpr(pc, whileStmt.Condition);
+                ResolveStmts(pc, whileStmt.Body);
+                break;
+            case RepeatStmt repeatStmt:
+                ResolveStmts(pc, repeatStmt.Body);
+                SynthesizeExpr(pc, repeatStmt.Condition);
+                break;
+            case IfStmt ifStmt:
+            {
+                var tCond = SynthesizeExpr(pc, ifStmt.Condition);
+                EnsureBoolLike(pc, ifStmt.Condition.Span, tCond);
+
+                var (thenNarrows, elseNarrows) = AnalyzeCondition(pc, ifStmt.Condition);
+                var thenSaved = PushAllNarrows(thenNarrows);
+                ResolveStmts(pc, ifStmt.Body);
+                PopAllNarrows(thenSaved);
+
+                foreach (var elseIf in ifStmt.ElseIfs)
+                {
+                    var tEC = SynthesizeExpr(pc, elseIf.Condition);
+                    EnsureBoolLike(pc, elseIf.Condition.Span, tEC);
+                    var (eiThen, _) = AnalyzeCondition(pc, elseIf.Condition);
+                    var eiSaved = PushAllNarrows(eiThen);
+                    ResolveStmts(pc, elseIf.Body);
+                    PopAllNarrows(eiSaved);
+                }
+
+                if (ifStmt.ElseBody != null)
+                {
+                    var elseSaved = PushAllNarrows(elseNarrows);
+                    ResolveStmts(pc, ifStmt.ElseBody);
+                    PopAllNarrows(elseSaved);
+                }
+
+                CheckExhaustiveMatch(pc, ifStmt);
+                break;
+            }
+            case NumericForStmt nf:
+            {
+                var ts = SynthesizeExpr(pc, nf.Start);
+                EnsureAssignable(pc, nf.Start.Span, pc.Types.PrimNumber.ID, ts);
+                var tl = SynthesizeExpr(pc, nf.Limit);
+                EnsureAssignable(pc, nf.Limit.Span, pc.Types.PrimNumber.ID, tl);
+                if (nf.Step != null)
+                {
+                    var tStep = SynthesizeExpr(pc, nf.Step);
+                    EnsureAssignable(pc, nf.Step.Span, pc.Types.PrimNumber.ID, tStep);
+                }
+
+                pc.Pkg!.Syms.SetType(nf.VarName.Sym, pc.Types.PrimNumber.ID);
+                ResolveStmts(pc, nf.Body);
+                break;
+            }
+            case GenericForStmt gf:
+            {
+                var iterTypes = new List<TypID>();
+                foreach (var iter in gf.Iterators)
+                {
+                    iterTypes.Add(SynthesizeExpr(pc, iter));
+                }
+
+                InferGenericForVarTypes(pc, gf, iterTypes);
+
+                ResolveStmts(pc, gf.Body);
+                break;
+            }
+            case ReturnStmt returnStmt:
+                foreach (var value in returnStmt.Values)
+                {
+                    SynthesizeExpr(pc, value);
+                }
+
+                break;
+            case ImportStmt:
+                break;
+            case ExportStmt exportStmt:
+                ResolveDecl(pc, exportStmt.Declaration);
+                break;
+            case MatchStmt matchStmt:
+            {
+                var scrutType = SynthesizeExpr(pc, matchStmt.Scrutinee);
+                foreach (var arm in matchStmt.Arms)
+                {
+                    if (arm.Pattern.ValueExpr != null)
+                    {
+                        var patType = SynthesizeExpr(pc, arm.Pattern.ValueExpr);
+                        CheckMatchPatternType(pc, scrutType, patType, arm.Pattern.ValueExpr.Span);
+                    }
+                    if (arm.Pattern.Kind == MatchPatternKind.TypeBinding && arm.Pattern.TypeRef != null)
+                        CheckMatchPatternTypeBinding(pc, scrutType, arm.Pattern.TypeRef, arm.Pattern.Span);
+                    if (arm.Guard != null) SynthesizeExpr(pc, arm.Guard);
+                    ResolveStmts(pc, arm.Body);
+                }
+                CheckExhaustiveMatch(pc, matchStmt);
+                break;
+            }
+            case ContinueStmt:
+                break;
+            case DeferStmt ds:
+                if (ds.Call != null) SynthesizeExpr(pc, ds.Call);
+                if (ds.Block != null) ResolveStmts(pc, ds.Block);
+                break;
+            case GuardStmt gs:
+                SynthesizeExpr(pc, gs.Condition);
+                if (gs.ElseExpr != null) SynthesizeExpr(pc, gs.ElseExpr);
+                break;
+            default:
+                throw new InvalidOperationException($"Unknown statement kind: {stmt.GetType().Name}");
+        }
+    }
+
+    private void ResolveDecl(PassContext pc, Decl decl)
+    {
+        switch (decl)
+        {
+            case FunctionDecl fd:
+                if (fd.IsAsync) _asyncDepth++;
+                ResolveFunctionLike(pc, fd.Parameters, fd.ReturnType, fd.Body, fd.ReturnStmt,
+                    fd.NamePath.Count == 1 && fd.MethodName == null ? fd.NamePath[0] : null, fd.IsAsync);
+                if (fd.IsAsync) _asyncDepth--;
+                break;
+            case LocalFunctionDecl lfd:
+                if (lfd.IsAsync) _asyncDepth++;
+                ResolveFunctionLike(pc, lfd.Parameters, lfd.ReturnType, lfd.Body, lfd.ReturnStmt, lfd.Name, lfd.IsAsync);
+                if (lfd.IsAsync) _asyncDepth--;
+                break;
+            case LocalDecl ld:
+                ResolveLocalDecl(pc, ld);
+                break;
+            case DeclareFunctionDecl dfd:
+            {
+                var paramTypes = new List<Tuple<string, Type>>();
+                var dfdIsVararg = false;
+                Type? dfdVarargType = null;
+                foreach (var param in dfd.Parameters)
+                {
+                    var t = ResolveParamType(pc, param);
+                    if (param.IsVararg)
+                    {
+                        dfdIsVararg = true;
+                        dfdVarargType = t.Kind == TypeKind.PrimitiveAny ? null : t;
+                    }
+                    else
+                    {
+                        paramTypes.Add(new Tuple<string, Type>(param.Name.Name, t));
+                    }
+                    if (param.Name.Sym != SymID.Invalid)
+                    {
+                        pc.Pkg!.Syms.SetType(param.Name.Sym, t.ID);
+                    }
+                }
+
+                var ret = dfd.ReturnType != null && dfd.ReturnType.ResolvedType != TypID.Invalid
+                    ? GetType(pc, dfd.ReturnType.ResolvedType)
+                    : pc.Types.PrimNil;
+                var funcTyp = pc.Types.FuncOf(paramTypes, ret, dfdIsVararg, dfdVarargType, isAsync: dfd.IsAsync);
+                if (dfd.NamePath.Count == 1 && dfd.MethodName == null)
+                {
+                    pc.Pkg!.Syms.SetType(dfd.NamePath[0].Sym, funcTyp);
+                }
+
+                break;
+            }
+            case DeclareVariableDecl dvd:
+            {
+                var t = dvd.TypeAnnotation.ResolvedType;
+                if (t != TypID.Invalid)
+                {
+                    pc.Pkg!.Syms.SetType(dvd.Name.Sym, t);
+                }
+
+                break;
+            }
+            case DeclareModuleDecl dmd:
+                foreach (var member in dmd.Members)
+                {
+                    ResolveDecl(pc, member);
+                }
+
+                break;
+            case EnumDecl ed:
+                break;
+            case ClassDecl cd:
+                ResolveClassDecl(pc, cd);
+                break;
+            case InterfaceDecl id:
+                ResolveInterfaceDecl(pc, id);
+                break;
+            default:
+                throw new InvalidOperationException($"Unknown declaration kind: {decl.GetType().Name}");
+        }
+    }
+
+    private void ResolveClassDecl(PassContext pc, ClassDecl cd)
+    {
+        if (cd.Name.Sym == SymID.Invalid) return;
+        if (!pc.Pkg!.Syms.GetByID(cd.Name.Sym, out var classSym)) return;
+        if (!pc.Types.GetByID(classSym.Type, out var rawType) || rawType is not ClassType classType) return;
+
+        foreach (var (id, sym) in pc.Pkg.Syms.ByID)
+            if (sym.Name == "self" && sym.DeclaringNode == cd.ID && sym.Type == TypID.Invalid)
+                pc.Pkg.Syms.SetType(id, classType.ID);
+
+        if (cd.BaseClass != null && cd.BaseClass.Sym != SymID.Invalid)
+        {
+            var baseTyp = LookupSymbolType(pc, cd.BaseClass.Sym);
+            if (baseTyp != TypID.Invalid && pc.Types.GetByID(baseTyp, out var bt) && bt is ClassType baseCls)
+                classType.BaseClass = baseCls;
+            else if (baseTyp != TypID.Invalid)
+                pc.Diag.Report(cd.BaseClass.Span, Diagnostics.DiagnosticCode.ErrExtendsNonClass, cd.BaseClass.Name);
+        }
+
+        foreach (var iface in cd.Interfaces)
+        {
+            if (iface.Sym == SymID.Invalid) continue;
+            var ifaceTyp = LookupSymbolType(pc, iface.Sym);
+            if (ifaceTyp != TypID.Invalid && pc.Types.GetByID(ifaceTyp, out var it) && it is InterfaceType ifaceType)
+                classType.Interfaces.Add(ifaceType);
+            else if (ifaceTyp != TypID.Invalid)
+                pc.Diag.Report(iface.Span, Diagnostics.DiagnosticCode.ErrImplementsNonInterface, iface.Name);
+        }
+
+        foreach (var field in cd.Fields)
+        {
+            if (field.DefaultValue != null) SynthesizeExpr(pc, field.DefaultValue);
+            var fieldType = field.TypeAnnotation != null && field.TypeAnnotation.ResolvedType != TypID.Invalid
+                ? GetType(pc, field.TypeAnnotation.ResolvedType)
+                : (field.DefaultValue != null ? GetType(pc, field.DefaultValue.Type) : pc.Types.PrimAny);
+            if (!field.IsLocal)
+                classType.InstanceFields[field.Name.Name] = new StructType.Field(field.Name, fieldType);
+            if (field.IsProtected)
+                classType.ProtectedMembers.Add(field.Name.Name);
+        }
+
+        if (cd.Constructor != null)
+        {
+            var ctorParams = new List<Tuple<string, Type>>();
+            foreach (var p in cd.Constructor.Parameters)
+            {
+                var t = ResolveParamType(pc, p);
+                if (p.Name.Sym != SymID.Invalid) pc.Pkg!.Syms.SetType(p.Name.Sym, t.ID);
+                ctorParams.Add(new Tuple<string, Type>(p.Name.Name, t));
+            }
+            classType.ConstructorType = (FunctionType)GetType(pc, pc.Types.FuncOf(ctorParams, classType));
+
+            ResolveStmts(pc, cd.Constructor.Body);
+            if (cd.Constructor.ReturnStmt != null) ResolveStmt(pc, cd.Constructor.ReturnStmt);
+        }
+
+        foreach (var method in cd.Methods)
+        {
+            if (method.IsLocal) continue;
+
+            if (method.IsAbstract && !cd.IsAbstract)
+                pc.Diag.Report(method.Span, Diagnostics.DiagnosticCode.ErrAbstractInNonAbstractClass, method.Name.Name);
+
+            if (method.IsAsync) _asyncDepth++;
+            var methodParams = new List<Tuple<string, Type>>();
+            var isVararg = false;
+            Type? varargType = null;
+            var defaultIndices = new List<int>();
+            for (var i = 0; i < method.Parameters.Count; i++)
+            {
+                var p = method.Parameters[i];
+                var t = ResolveParamType(pc, p);
+                if (p.IsVararg) { isVararg = true; varargType = t.Kind == TypeKind.PrimitiveAny ? null : t; }
+                else { methodParams.Add(new Tuple<string, Type>(p.Name.Name, t)); }
+                if (p.Name.Sym != SymID.Invalid) pc.Pkg!.Syms.SetType(p.Name.Sym, t.ID);
+                if (p.DefaultValue != null) { SynthesizeExpr(pc, p.DefaultValue); defaultIndices.Add(i); }
+            }
+            var retType = method.ReturnType != null && method.ReturnType.ResolvedType != TypID.Invalid
+                ? GetType(pc, method.ReturnType.ResolvedType) : pc.Types.PrimNil;
+            var funcTypId = pc.Types.FuncOf(methodParams, retType, isVararg, varargType, defaultIndices.Count > 0 ? defaultIndices : null, method.IsAsync);
+            if (method.IsStatic)
+                classType.StaticMethods[method.Name.Name] = (FunctionType)GetType(pc, funcTypId);
+            else
+                classType.Methods[method.Name.Name] = (FunctionType)GetType(pc, funcTypId);
+
+            if (method.IsAbstract)
+                classType.AbstractMethods.Add(method.Name.Name);
+
+            if (method.IsProtected)
+                classType.ProtectedMembers.Add(method.Name.Name);
+
+            if (method.IsOverride && classType.BaseClass != null)
+            {
+                if (!ParentHasMethod(classType.BaseClass, method.Name.Name))
+                    pc.Diag.Report(method.Span, Diagnostics.DiagnosticCode.ErrOverrideNoParent, method.Name.Name);
+            }
+            else if (method.IsOverride && classType.BaseClass == null)
+            {
+                pc.Diag.Report(method.Span, Diagnostics.DiagnosticCode.ErrOverrideNoParent, method.Name.Name);
+            }
+
+            if (!method.IsOperator && !method.IsOverride && !method.IsAbstract && classType.BaseClass != null
+                && ParentHasMethod(classType.BaseClass, method.Name.Name))
+            {
+                pc.Diag.Report(method.Span, Diagnostics.DiagnosticCode.WarnMissingShadowOverride, method.Name.Name, classType.BaseClass.Name);
+            }
+
+            if (!method.IsAbstract)
+            {
+                ResolveStmts(pc, method.Body);
+                if (method.ReturnStmt != null) ResolveStmt(pc, method.ReturnStmt);
+            }
+            if (method.IsAsync) _asyncDepth--;
+        }
+
+        foreach (var accessor in cd.Accessors)
+        {
+            var accParams = new List<Tuple<string, Type>>();
+            foreach (var p in accessor.Parameters)
+            {
+                var t = ResolveParamType(pc, p);
+                if (p.Name.Sym != SymID.Invalid) pc.Pkg!.Syms.SetType(p.Name.Sym, t.ID);
+                accParams.Add(new Tuple<string, Type>(p.Name.Name, t));
+            }
+            var accRetType = accessor.ReturnType != null && accessor.ReturnType.ResolvedType != TypID.Invalid
+                ? GetType(pc, accessor.ReturnType.ResolvedType) : pc.Types.PrimNil;
+            var accFuncTyp = (FunctionType)GetType(pc, pc.Types.FuncOf(accParams, accRetType));
+            if (accessor.Kind == AccessorKind.Getter)
+                classType.Getters[accessor.Name.Name] = accFuncTyp;
+            else
+                classType.Setters[accessor.Name.Name] = accFuncTyp;
+
+            if (accessor.IsOverride && classType.BaseClass != null)
+            {
+                var hasParent = accessor.Kind == AccessorKind.Getter
+                    ? ParentHasGetter(classType.BaseClass, accessor.Name.Name)
+                    : ParentHasSetter(classType.BaseClass, accessor.Name.Name);
+                if (!hasParent)
+                    pc.Diag.Report(accessor.Span, Diagnostics.DiagnosticCode.ErrOverrideNoParent, accessor.Name.Name);
+            }
+            else if (accessor.IsOverride && classType.BaseClass == null)
+            {
+                pc.Diag.Report(accessor.Span, Diagnostics.DiagnosticCode.ErrOverrideNoParent, accessor.Name.Name);
+            }
+
+            ResolveStmts(pc, accessor.Body);
+            if (accessor.ReturnStmt != null) ResolveStmt(pc, accessor.ReturnStmt);
+        }
+
+        CheckInterfaceImplementation(pc, cd, classType);
+        CheckAbstractImplementation(pc, cd, classType);
+    }
+
+    private static bool ParentHasMethod(ClassType cls, string name)
+    {
+        var cur = cls;
+        while (cur != null)
+        {
+            if (cur.Methods.ContainsKey(name) || cur.AbstractMethods.Contains(name)) return true;
+            cur = cur.BaseClass;
+        }
+        return false;
+    }
+
+    private static bool ParentHasGetter(ClassType cls, string name)
+    {
+        var cur = cls;
+        while (cur != null)
+        {
+            if (cur.Getters.ContainsKey(name)) return true;
+            cur = cur.BaseClass;
+        }
+        return false;
+    }
+
+    private static bool ParentHasSetter(ClassType cls, string name)
+    {
+        var cur = cls;
+        while (cur != null)
+        {
+            if (cur.Setters.ContainsKey(name)) return true;
+            cur = cur.BaseClass;
+        }
+        return false;
+    }
+
+    private void CheckInterfaceImplementation(PassContext pc, ClassDecl cd, ClassType classType)
+    {
+        foreach (var ifaceType in classType.Interfaces)
+        {
+            foreach (var (name, _) in ifaceType.Methods)
+            {
+                if (!classType.Methods.ContainsKey(name))
+                    pc.Diag.Report(cd.Span, Diagnostics.DiagnosticCode.ErrMissingInterfaceMember, cd.Name.Name, name, ifaceType.Name);
+            }
+            foreach (var (name, _) in ifaceType.Fields)
+            {
+                if (!classType.InstanceFields.ContainsKey(name))
+                    pc.Diag.Report(cd.Span, Diagnostics.DiagnosticCode.ErrMissingInterfaceMember, cd.Name.Name, name, ifaceType.Name);
+            }
+        }
+    }
+
+    private void CheckAbstractImplementation(PassContext pc, ClassDecl cd, ClassType classType)
+    {
+        if (cd.IsAbstract || classType.BaseClass == null) return;
+
+        var cur = classType.BaseClass;
+        while (cur != null)
+        {
+            foreach (var abstractMethod in cur.AbstractMethods)
+            {
+                if (!classType.Methods.ContainsKey(abstractMethod))
+                    pc.Diag.Report(cd.Span, Diagnostics.DiagnosticCode.ErrMissingAbstractMember, cd.Name.Name, abstractMethod, cur.Name);
+            }
+            cur = cur.BaseClass;
+        }
+    }
+
+    private void ResolveInterfaceDecl(PassContext pc, InterfaceDecl id)
+    {
+        if (id.Name.Sym == SymID.Invalid) return;
+        if (!pc.Pkg!.Syms.GetByID(id.Name.Sym, out var ifaceSym)) return;
+        if (!pc.Types.GetByID(ifaceSym.Type, out var rawType) || rawType is not InterfaceType ifaceType) return;
+
+        foreach (var baseIface in id.BaseInterfaces)
+        {
+            if (baseIface.Sym == SymID.Invalid) continue;
+            var bt = LookupSymbolType(pc, baseIface.Sym);
+            if (bt != TypID.Invalid && pc.Types.GetByID(bt, out var bit) && bit is InterfaceType baseIfaceType)
+                ifaceType.BaseInterfaces.Add(baseIfaceType);
+        }
+
+        foreach (var field in id.Fields)
+        {
+            var fType = field.TypeAnnotation.ResolvedType != TypID.Invalid
+                ? GetType(pc, field.TypeAnnotation.ResolvedType) : pc.Types.PrimAny;
+            ifaceType.Fields[field.Name.Name] = new StructType.Field(field.Name, fType);
+        }
+
+        foreach (var method in id.Methods)
+        {
+            var methodParams = new List<Tuple<string, Type>>();
+            var ifaceIsVararg = false;
+            Type? ifaceVarargType = null;
+            foreach (var p in method.Parameters)
+            {
+                var t = ResolveParamType(pc, p);
+                if (p.IsVararg)
+                {
+                    ifaceIsVararg = true;
+                    ifaceVarargType = t.Kind == TypeKind.PrimitiveAny ? null : t;
+                }
+                else
+                {
+                    methodParams.Add(new Tuple<string, Type>(p.Name.Name, t));
+                }
+            }
+            var retType = method.ReturnType != null && method.ReturnType.ResolvedType != TypID.Invalid
+                ? GetType(pc, method.ReturnType.ResolvedType) : pc.Types.PrimNil;
+            ifaceType.Methods[method.Name.Name] = (FunctionType)GetType(pc,
+                pc.Types.FuncOf(methodParams, retType, ifaceIsVararg, ifaceVarargType, isAsync: method.IsAsync));
+        }
+    }
+
+    private void ResolveFunctionLike(PassContext pc, List<Parameter> parameters, TypeRef? returnTypeRef,
+        List<Stmt> body, ReturnStmt? returnStmt, NameRef? funcName, bool isAsync = false)
+    {
+        var paramTypes = new List<Tuple<string, Type>>();
+        var isVararg = false;
+        Type? varargType = null;
+        var defaultIndices = new List<int>();
+
+        for (var i = 0; i < parameters.Count; i++)
+        {
+            var param = parameters[i];
+            var t = ResolveParamType(pc, param);
+
+            if (param.IsVararg)
+            {
+                isVararg = true;
+                varargType = t.Kind == TypeKind.PrimitiveAny ? null : t;
+                if (param.Name.Sym != SymID.Invalid)
+                {
+                    var arrTyp = varargType != null
+                        ? pc.Pkg!.Types.ArrayOf(varargType)
+                        : pc.Pkg!.Types.ArrayOf(pc.Types.PrimAny);
+                    pc.Pkg!.Syms.SetType(param.Name.Sym, arrTyp);
+                }
+            }
+            else
+            {
+                paramTypes.Add(new Tuple<string, Type>(param.Name.Name, t));
+                if (param.Name.Sym != SymID.Invalid)
+                {
+                    pc.Pkg!.Syms.SetType(param.Name.Sym, t.ID);
+                }
+                if (param.DefaultValue != null)
+                {
+                    var dvt = SynthesizeExpr(pc, param.DefaultValue);
+                    EnsureAssignable(pc, param.DefaultValue.Span, t.ID, dvt);
+                    defaultIndices.Add(i);
+                }
+            }
+        }
+
+        ResolveStmts(pc, body);
+        if (returnStmt != null)
+        {
+            ResolveStmt(pc, returnStmt);
+        }
+
+        Type returnType;
+        if (returnTypeRef != null && returnTypeRef.ResolvedType != TypID.Invalid)
+        {
+            returnType = GetType(pc, returnTypeRef.ResolvedType);
+            var collected = CollectReturnTypes(pc, body);
+            if (returnStmt != null)
+            {
+                collected.Add((ComputeReturnType(pc, returnStmt.Values), returnStmt.Span));
+            }
+
+            foreach (var (typ, span) in collected)
+            {
+                EnsureAssignable(pc, span, returnType.ID, typ);
+            }
+        }
+        else
+        {
+            var collected = CollectReturnTypes(pc, body);
+            if (returnStmt != null)
+            {
+                collected.Add((ComputeReturnType(pc, returnStmt.Values), returnStmt.Span));
+            }
+
+            if (collected.Count == 0)
+            {
+                returnType = pc.Types.PrimNil;
+            }
+            else
+            {
+                var baseType = collected[0].typ;
+                for (var i = 1; i < collected.Count; i++)
+                {
+                    var rt = collected[i].typ;
+                    if (rt == baseType) continue;
+                    if (IsTypeAssignable(pc, baseType, rt)) continue;
+                    if (IsTypeAssignable(pc, rt, baseType))
+                    {
+                        baseType = rt;
+                    }
+                    else
+                    {
+                        baseType = pc.Types.PrimAny.ID;
+                        break;
+                    }
+                }
+
+                returnType = GetType(pc, baseType);
+            }
+        }
+
+        var funcTyp = pc.Types.FuncOf(paramTypes, returnType, isVararg, varargType,
+            defaultIndices.Count > 0 ? defaultIndices : null, isAsync);
+        if (funcName is { Sym: { } funcSym } && funcSym != SymID.Invalid)
+        {
+            pc.Pkg!.Syms.SetType(funcSym, funcTyp);
+        }
+    }
+
+    private void ResolveLocalDecl(PassContext pc, LocalDecl ld)
+    {
+        var valueTypes = new List<TypID>();
+        foreach (var value in ld.Values)
+        {
+            valueTypes.Add(SynthesizeExpr(pc, value));
+        }
+
+        for (var i = 0; i < ld.Variables.Count; i++)
+        {
+            var variable = ld.Variables[i];
+            var annotated = variable.TypeAnnotation?.ResolvedType ?? TypID.Invalid;
+            var inferred = i < valueTypes.Count ? valueTypes[i] : pc.Types.PrimNil.ID;
+
+            TypID finalType;
+            if (annotated != TypID.Invalid)
+            {
+                if (i < valueTypes.Count && !IsTypeAssignable(pc, annotated, inferred))
+                {
+                    pc.Diag.Report(variable.Span, DiagnosticCode.ErrTypeMismatch,
+                        TypeName(pc, annotated), TypeName(pc, inferred));
+                }
+
+                finalType = annotated;
+            }
+            else
+            {
+                finalType = inferred != TypID.Invalid ? inferred : pc.Types.PrimAny.ID;
+            }
+
+            if (variable.Name.Sym != SymID.Invalid)
+            {
+                pc.Pkg!.Syms.SetType(variable.Name.Sym, finalType);
+            }
+        }
+    }
+
+    private void ResolveAssignStmt(PassContext pc, AssignStmt stmt)
+    {
+        var valueTypes = new List<TypID>();
+        foreach (var value in stmt.Values)
+        {
+            valueTypes.Add(SynthesizeExpr(pc, value));
+        }
+
+        for (var i = 0; i < stmt.Targets.Count; i++)
+        {
+            var target = stmt.Targets[i];
+            var targetType = SynthesizeExpr(pc, target);
+            if (i < valueTypes.Count && targetType != TypID.Invalid && targetType != pc.Types.PrimAny.ID)
+            {
+                if (!IsTypeAssignable(pc, targetType, valueTypes[i]))
+                {
+                    pc.Diag.Report(target.Span, DiagnosticCode.ErrTypeMismatch,
+                        TypeName(pc, targetType), TypeName(pc, valueTypes[i]));
+                }
+            }
+        }
+    }
+
+    private Type ResolveParamType(PassContext pc, Parameter param)
+    {
+        if (param.TypeAnnotation != null && param.TypeAnnotation.ResolvedType != TypID.Invalid)
+        {
+            return GetType(pc, param.TypeAnnotation.ResolvedType);
+        }
+
+        return pc.Types.PrimAny;
+    }
+
+    private void InferGenericForVarTypes(PassContext pc, GenericForStmt gf, List<TypID> iterTypes)
+    {
+        var tt = pc.Types;
+        var varCount = gf.VarNames.Count;
+        var inferred = new TypID[varCount];
+        for (var i = 0; i < varCount; i++) inferred[i] = tt.PrimAny.ID;
+
+        if (iterTypes.Count >= 1 && tt.GetByID(iterTypes[0], out var firstIterType))
+        {
+            switch (firstIterType)
+            {
+                case FunctionType ft:
+                    if (varCount >= 1 && ft.ParamTypes.Count >= 1)
+                        inferred[0] = ft.ParamTypes[0].ID;
+                    if (varCount >= 2 && ft.ParamTypes.Count >= 2)
+                        inferred[1] = ft.ParamTypes[1].ID;
+                    for (var i = 2; i < varCount && i < ft.ParamTypes.Count; i++)
+                        inferred[i] = ft.ParamTypes[i].ID;
+                    break;
+                case TableArrayType arr:
+                    if (varCount >= 1) inferred[0] = tt.PrimNumber.ID;
+                    if (varCount >= 2) inferred[1] = arr.ElementType.ID;
+                    break;
+                case TableMapType map:
+                    if (varCount >= 1) inferred[0] = map.KeyType.ID;
+                    if (varCount >= 2) inferred[1] = map.ValueType.ID;
+                    break;
+                case EnumType enumType:
+                    if (varCount >= 1) inferred[0] = tt.PrimString.ID;
+                    if (varCount >= 2) inferred[1] = enumType.BaseType.ID;
+                    break;
+            }
+        }
+
+        for (var i = 0; i < varCount; i++)
+        {
+            pc.Pkg!.Syms.SetType(gf.VarNames[i].Sym, inferred[i]);
+        }
+    }
+
+    private TypID SynthesizeExpr(PassContext pc, Expr expr)
+    {
+        var tt = pc.Types;
+        TypID result;
+
+        switch (expr)
+        {
+            case NilLiteralExpr:
+                result = tt.PrimNil.ID;
+                break;
+            case BoolLiteralExpr:
+                result = tt.PrimBool.ID;
+                break;
+            case NumberLiteralExpr:
+                result = tt.PrimNumber.ID;
+                break;
+            case StringLiteralExpr:
+                result = tt.PrimString.ID;
+                break;
+            case InterpolatedStringExpr interp:
+                foreach (var part in interp.Parts)
+                {
+                    if (part is InterpExprPart ep)
+                        SynthesizeExpr(pc, ep.Expression);
+                }
+
+                if (!pc.Config.Code.StringInterpolation)
+                {
+                    pc.Diag.Report(interp.Span, DiagnosticCode.ErrStringInterpolationDisabled);
+                }
+
+                result = tt.PrimString.ID;
+                break;
+            case VarargExpr:
+                result = tt.PrimAny.ID;
+                break;
+            case NameExpr nameExpr:
+                result = LookupSymbolType(pc, nameExpr.Name.Sym);
+                break;
+            case ParenExpr paren:
+                result = SynthesizeExpr(pc, paren.Inner);
+                break;
+            case BinaryExpr bin:
+                result = InferBinary(pc, bin);
+                break;
+            case UnaryExpr un:
+                result = InferUnary(pc, un);
+                break;
+            case NonNilAssertExpr nna:
+                result = StripNil(pc, SynthesizeExpr(pc, nna.Inner));
+                break;
+            case IncDecExpr incDec:
+                result = InferIncDec(pc, incDec);
+                break;
+            case TypeCheckExpr tchk:
+                SynthesizeExpr(pc, tchk.Inner);
+                result = tt.PrimBool.ID;
+                break;
+            case TypeCastExpr tcast:
+                SynthesizeExpr(pc, tcast.Inner);
+                result = tcast.TargetType.ResolvedType != TypID.Invalid
+                    ? tcast.TargetType.ResolvedType
+                    : tt.PrimAny.ID;
+                break;
+            case TypeOfExpr tof:
+                SynthesizeExpr(pc, tof.Inner);
+                result = tt.PrimString.ID;
+                break;
+            case InstanceOfExpr iof:
+                SynthesizeExpr(pc, iof.Inner);
+                if (iof.TargetType is GenericTypeRef)
+                {
+                    pc.Diag.Report(iof.Span, DiagnosticCode.WarnGenericInstanceOfErased, iof.ClassName.Name);
+                }
+                result = tt.PrimBool.ID;
+                break;
+            case FunctionDefExpr fde:
+                result = InferFunctionDef(pc, fde);
+                break;
+            case DotAccessExpr dot:
+                result = InferDotAccess(pc, dot);
+                break;
+            case IndexAccessExpr idx:
+                result = InferIndexAccess(pc, idx);
+                break;
+            case FunctionCallExpr call:
+                result = InferFunctionCall(pc, call);
+                break;
+            case MethodCallExpr mc:
+                result = InferMethodCall(pc, mc);
+                break;
+            case TableConstructorExpr tc:
+                result = InferTableConstructor(pc, tc);
+                break;
+            case MatchExpr me:
+                result = InferMatchExpr(pc, me);
+                break;
+            case AwaitExpr awaitExpr:
+                result = InferAwaitExpr(pc, awaitExpr);
+                break;
+            case NewExpr newExpr:
+                result = InferNewExpr(pc, newExpr);
+                break;
+            case SuperCallExpr superCall:
+                foreach (var arg in superCall.Arguments) SynthesizeExpr(pc, arg);
+                result = tt.PrimAny.ID;
+                break;
+            default:
+                result = tt.PrimAny.ID;
+                break;
+        }
+
+        expr.Type = result;
+        return result;
+    }
+
+    private TypID InferBinary(PassContext pc, BinaryExpr bin)
+    {
+        var tt = pc.Types;
+        var l = SynthesizeExpr(pc, bin.Left);
+        var r = SynthesizeExpr(pc, bin.Right);
+
+        if (IsConfiguredConcatOp(pc, bin.Op)
+            && (l == tt.PrimString.ID || r == tt.PrimString.ID))
+        {
+            EnsureConcatable(pc, bin.Left.Span, l);
+            EnsureConcatable(pc, bin.Right.Span, r);
+            return tt.PrimString.ID;
+        }
+
+        var metaName = BinaryOpToMetamethod(bin.Op);
+        if (metaName != null)
+        {
+            var metaReturn = TryGetMetamethodReturn(pc, l, metaName) ?? TryGetMetamethodReturn(pc, r, metaName);
+            if (metaReturn != null) return metaReturn.Value;
+        }
+
+        switch (bin.Op)
+        {
+            case BinaryOp.Add:
+            case BinaryOp.Sub:
+            case BinaryOp.Mul:
+            case BinaryOp.Div:
+            case BinaryOp.FloorDiv:
+            case BinaryOp.Mod:
+            case BinaryOp.Pow:
+                EnsureAssignable(pc, bin.Left.Span, tt.PrimNumber.ID, l);
+                EnsureAssignable(pc, bin.Right.Span, tt.PrimNumber.ID, r);
+                return tt.PrimNumber.ID;
+            case BinaryOp.Concat:
+                EnsureConcatable(pc, bin.Left.Span, l);
+                EnsureConcatable(pc, bin.Right.Span, r);
+                return tt.PrimString.ID;
+            case BinaryOp.BitwiseAnd:
+            case BinaryOp.BitwiseOr:
+            case BinaryOp.BitwiseXor:
+            case BinaryOp.LShift:
+            case BinaryOp.RShift:
+                EnsureAssignable(pc, bin.Left.Span, tt.PrimNumber.ID, l);
+                EnsureAssignable(pc, bin.Right.Span, tt.PrimNumber.ID, r);
+                return tt.PrimNumber.ID;
+            case BinaryOp.Eq:
+            case BinaryOp.Neq:
+                return tt.PrimBool.ID;
+            case BinaryOp.Lt:
+            case BinaryOp.Gt:
+            case BinaryOp.Lte:
+            case BinaryOp.Gte:
+                if (!IsNumberLike(pc, l) && !IsStringLike(pc, l))
+                {
+                    pc.Diag.Report(bin.Left.Span, DiagnosticCode.ErrTypeMismatch, "number or string", TypeName(pc, l));
+                }
+
+                if (!IsNumberLike(pc, r) && !IsStringLike(pc, r))
+                {
+                    pc.Diag.Report(bin.Right.Span, DiagnosticCode.ErrTypeMismatch, "number or string", TypeName(pc, r));
+                }
+
+                return tt.PrimBool.ID;
+            case BinaryOp.And:
+            case BinaryOp.Or:
+                if (l == r) return l;
+                if (l == tt.PrimAny.ID || r == tt.PrimAny.ID) return tt.PrimAny.ID;
+                return pc.Types.UnionOf([GetType(pc, l), GetType(pc, r)]);
+            case BinaryOp.NilCoalesce:
+            {
+                var stripped = StripNil(pc, l);
+                if (stripped == r) return stripped;
+                if (l == tt.PrimAny.ID || r == tt.PrimAny.ID) return tt.PrimAny.ID;
+                if (IsTypeAssignable(pc, stripped, r)) return stripped;
+                return pc.Types.UnionOf([GetType(pc, stripped), GetType(pc, r)]);
+            }
+            default:
+                pc.Diag.Report(bin.Span, DiagnosticCode.ErrInvalidOperator, bin.Op.ToString());
+                return tt.PrimAny.ID;
+        }
+    }
+
+    private TypID InferUnary(PassContext pc, UnaryExpr un)
+    {
+        var tt = pc.Types;
+        var t = SynthesizeExpr(pc, un.Operand);
+
+        var metaName = UnaryOpToMetamethod(un.Op);
+        if (metaName != null)
+        {
+            var metaReturn = TryGetMetamethodReturn(pc, t, metaName);
+            if (metaReturn != null) return metaReturn.Value;
+        }
+
+        switch (un.Op)
+        {
+            case UnaryOp.Negate:
+                EnsureAssignable(pc, un.Operand.Span, tt.PrimNumber.ID, t);
+                return tt.PrimNumber.ID;
+            case UnaryOp.LogicalNot:
+                return tt.PrimBool.ID;
+            case UnaryOp.Length:
+                if (!IsStringLike(pc, t) && !IsTableLike(pc, t) && t != tt.PrimAny.ID)
+                {
+                    pc.Diag.Report(un.Operand.Span, DiagnosticCode.ErrTypeMismatch, "string or table", TypeName(pc, t));
+                }
+
+                return tt.PrimNumber.ID;
+            case UnaryOp.BitwiseNot:
+                EnsureAssignable(pc, un.Operand.Span, tt.PrimNumber.ID, t);
+                return tt.PrimNumber.ID;
+            default:
+                return tt.PrimAny.ID;
+        }
+    }
+
+    private TypID InferIncDec(PassContext pc, IncDecExpr incDec)
+    {
+        var tt = pc.Types;
+        var t = SynthesizeExpr(pc, incDec.Target);
+
+        if (incDec.Target is not (NameExpr or DotAccessExpr or IndexAccessExpr))
+        {
+            pc.Diag.Report(incDec.Target.Span, DiagnosticCode.ErrInvalidAssignTarget);
+            return tt.PrimNumber.ID;
+        }
+
+        EnsureAssignable(pc, incDec.Target.Span, tt.PrimNumber.ID, t);
+        return tt.PrimNumber.ID;
+    }
+
+    private TypID InferMatchExpr(PassContext pc, MatchExpr me)
+    {
+        var tt = pc.Types;
+        var scrutType = SynthesizeExpr(pc, me.Scrutinee);
+
+        TypID? unified = null;
+        foreach (var arm in me.Arms)
+        {
+            if (arm.Pattern.ValueExpr != null)
+            {
+                var patType = SynthesizeExpr(pc, arm.Pattern.ValueExpr);
+                CheckMatchPatternType(pc, scrutType, patType, arm.Pattern.ValueExpr.Span);
+            }
+            if (arm.Pattern.Kind == MatchPatternKind.TypeBinding && arm.Pattern.TypeRef != null)
+                CheckMatchPatternTypeBinding(pc, scrutType, arm.Pattern.TypeRef, arm.Pattern.Span);
+            if (arm.Guard != null) SynthesizeExpr(pc, arm.Guard);
+            var armType = SynthesizeExpr(pc, arm.Value);
+            if (unified == null)
+                unified = armType;
+            else if (unified.Value != armType)
+            {
+                if (unified.Value == tt.PrimAny.ID || armType == tt.PrimAny.ID)
+                    unified = tt.PrimAny.ID;
+                else
+                    unified = pc.Types.UnionOf([GetType(pc, unified.Value), GetType(pc, armType)]);
+            }
+        }
+
+        return unified ?? tt.PrimAny.ID;
+    }
+
+    private TypID InferAwaitExpr(PassContext pc, AwaitExpr awaitExpr)
+    {
+        if (_asyncDepth <= 0)
+        {
+            pc.Diag.Report(awaitExpr.Span, DiagnosticCode.ErrAwaitOutsideAsync);
+        }
+
+        var inner = awaitExpr.Expression;
+        if (inner is not FunctionCallExpr call && inner is not MethodCallExpr)
+        {
+            SynthesizeExpr(pc, inner);
+            pc.Diag.Report(awaitExpr.Span, DiagnosticCode.ErrAwaitNonCallable);
+            return pc.Types.PrimAny.ID;
+        }
+
+        FunctionType? fnType = null;
+        List<TypID> argTypes;
+
+        if (inner is FunctionCallExpr fc)
+        {
+            var calleeTyp = SynthesizeExpr(pc, fc.Callee);
+            argTypes = fc.Arguments.Select(a => SynthesizeExpr(pc, a)).ToList();
+            calleeTyp = StripNil(pc, calleeTyp);
+            if (pc.Pkg!.Types.GetByID(calleeTyp, out var t) && t is FunctionType ft)
+                fnType = ft;
+        }
+        else
+        {
+            var mc = (MethodCallExpr)inner;
+            SynthesizeExpr(pc, mc.Object);
+            argTypes = mc.Arguments.Select(a => SynthesizeExpr(pc, a)).ToList();
+            var methodType = InferMethodCall(pc, mc);
+            if (pc.Pkg!.Types.GetByID(methodType, out var t) && t is FunctionType ft)
+                fnType = ft;
+        }
+
+        if (fnType == null)
+        {
+            pc.Diag.Report(awaitExpr.Span, DiagnosticCode.ErrAwaitNonCallable);
+            return pc.Types.PrimAny.ID;
+        }
+
+        if (fnType.IsAsync)
+            return fnType.ReturnType.ID;
+
+        var lastIdx = fnType.ParamTypes.Count - 1;
+        if (lastIdx >= 0 && fnType.ParamTypes[lastIdx] is FunctionType cbType)
+        {
+            if (cbType.ParamTypes.Count == 0)
+                return pc.Types.PrimNil.ID;
+            if (cbType.ParamTypes.Count == 1)
+                return cbType.ParamTypes[0].ID;
+            return pc.Types.PrimAny.ID;
+        }
+
+        var calleeName = inner is FunctionCallExpr fc2 && fc2.Callee is NameExpr ne ? ne.Name.Name : "function";
+        pc.Diag.Report(awaitExpr.Span, DiagnosticCode.ErrAwaitNonAsync, calleeName);
+        return pc.Types.PrimAny.ID;
+    }
+
+    private TypID InferNewExpr(PassContext pc, NewExpr newExpr)
+    {
+        var classTypId = LookupSymbolType(pc, newExpr.ClassName.Sym);
+        foreach (var arg in newExpr.Arguments) SynthesizeExpr(pc, arg);
+
+        if (classTypId == TypID.Invalid || !pc.Types.GetByID(classTypId, out var rawType) || rawType is not ClassType classType)
+        {
+            if (classTypId != TypID.Invalid)
+                pc.Diag.Report(newExpr.Span, DiagnosticCode.ErrNewNonClass, newExpr.ClassName.Name);
+            return pc.Types.PrimAny.ID;
+        }
+
+        if (classType.IsAbstract)
+        {
+            pc.Diag.Report(newExpr.Span, DiagnosticCode.ErrInstantiateAbstract, newExpr.ClassName.Name);
+            return classTypId;
+        }
+
+        if (classType.ConstructorType != null)
+        {
+            var ctorType = classType.ConstructorType;
+            var argCount = newExpr.Arguments.Count;
+            var paramCount = ctorType.ParamTypes.Count;
+            if (argCount < ctorType.MinParamCount || argCount > paramCount)
+            {
+                pc.Diag.Report(newExpr.Span, DiagnosticCode.ErrConstructorParamMismatch,
+                    newExpr.ClassName.Name, paramCount.ToString(), argCount.ToString());
+            }
+        }
+
+        return classTypId;
+    }
+
+    private TypID InferFunctionDef(PassContext pc, FunctionDefExpr fde)
+    {
+        if (fde.IsAsync) _asyncDepth++;
+        var paramTypes = new List<Tuple<string, Type>>();
+        var fdeIsVararg = false;
+        Type? fdeVarargType = null;
+        var fdeDefaults = new List<int>();
+
+        for (var i = 0; i < fde.Parameters.Count; i++)
+        {
+            var param = fde.Parameters[i];
+            var t = ResolveParamType(pc, param);
+            if (param.IsVararg)
+            {
+                fdeIsVararg = true;
+                fdeVarargType = t.Kind == TypeKind.PrimitiveAny ? null : t;
+                if (param.Name.Sym != SymID.Invalid)
+                {
+                    var arrTyp = fdeVarargType != null
+                        ? pc.Pkg!.Types.ArrayOf(fdeVarargType)
+                        : pc.Pkg!.Types.ArrayOf(pc.Types.PrimAny);
+                    pc.Pkg!.Syms.SetType(param.Name.Sym, arrTyp);
+                }
+            }
+            else
+            {
+                paramTypes.Add(new Tuple<string, Type>(param.Name.Name, t));
+                if (param.Name.Sym != SymID.Invalid)
+                {
+                    pc.Pkg!.Syms.SetType(param.Name.Sym, t.ID);
+                }
+                if (param.DefaultValue != null)
+                {
+                    var dvt = SynthesizeExpr(pc, param.DefaultValue);
+                    EnsureAssignable(pc, param.DefaultValue.Span, t.ID, dvt);
+                    fdeDefaults.Add(i);
+                }
+            }
+        }
+
+        ResolveStmts(pc, fde.Body);
+        if (fde.ReturnStmt != null)
+        {
+            ResolveStmt(pc, fde.ReturnStmt);
+        }
+
+        Type returnType;
+        if (fde.ReturnType != null && fde.ReturnType.ResolvedType != TypID.Invalid)
+        {
+            returnType = GetType(pc, fde.ReturnType.ResolvedType);
+        }
+        else
+        {
+            var collected = CollectReturnTypes(pc, fde.Body);
+            if (fde.ReturnStmt != null)
+            {
+                collected.Add((ComputeReturnType(pc, fde.ReturnStmt.Values), fde.ReturnStmt.Span));
+            }
+
+            if (collected.Count == 0)
+            {
+                returnType = pc.Types.PrimNil;
+            }
+            else
+            {
+                var baseType = collected[0].typ;
+                for (var i = 1; i < collected.Count; i++)
+                {
+                    var rt = collected[i].typ;
+                    if (rt == baseType) continue;
+                    if (IsTypeAssignable(pc, baseType, rt)) continue;
+                    if (IsTypeAssignable(pc, rt, baseType))
+                    {
+                        baseType = rt;
+                    }
+                    else
+                    {
+                        baseType = pc.Types.PrimAny.ID;
+                        break;
+                    }
+                }
+
+                returnType = GetType(pc, baseType);
+            }
+        }
+
+        if (fde.IsAsync) _asyncDepth--;
+        return pc.Types.FuncOf(paramTypes, returnType, fdeIsVararg, fdeVarargType,
+            fdeDefaults.Count > 0 ? fdeDefaults : null, fde.IsAsync);
+    }
+
+    private TypID InferDotAccess(PassContext pc, DotAccessExpr dot)
+    {
+        var baseTyp = SynthesizeExpr(pc, dot.Object);
+
+        if (!dot.IsOptional)
+        {
+            var path = GetAccessPath(dot);
+            if (path != null && _narrowed.TryGetValue(path, out var narrowed))
+            {
+                return narrowed;
+            }
+        }
+
+        if (dot.IsOptional)
+        {
+            baseTyp = StripNil(pc, baseTyp);
+        }
+        else
+        {
+            EnsureNotNil(pc, dot.Object.Span, baseTyp);
+            if (IsNullable(pc, baseTyp))
+            {
+                baseTyp = StripNil(pc, baseTyp);
+            }
+        }
+
+        if (!pc.Pkg!.Types.GetByID(baseTyp, out var baseType))
+        {
+            return dot.IsOptional ? MakeNullable(pc, pc.Types.PrimAny.ID) : pc.Types.PrimAny.ID;
+        }
+
+        var resultType = pc.Types.PrimAny.ID;
+        switch (baseType)
+        {
+            case StructType st:
+            {
+                var field = st.Fields.FirstOrDefault(f => f.Name.Name == dot.FieldName.Name);
+                if (field == null)
+                {
+                    pc.Diag.Report(dot.FieldName.Span, DiagnosticCode.ErrTypeNotIndexable,
+                        $"{baseType.Key} has no field '{dot.FieldName.Name}'");
+                    return pc.Types.PrimAny.ID;
+                }
+
+                resultType = field.Type.ID;
+                break;
+            }
+            case TableMapType mt:
+                resultType = mt.ValueType.ID;
+                break;
+            case EnumType et:
+            {
+                var member = et.Members.FirstOrDefault(m => m.Name == dot.FieldName.Name);
+                if (member == null)
+                {
+                    pc.Diag.Report(dot.FieldName.Span, DiagnosticCode.ErrTypeNotIndexable,
+                        $"enum '{et.Name}' has no member '{dot.FieldName.Name}'");
+                    return pc.Types.PrimAny.ID;
+                }
+
+                resultType = baseTyp;
+                break;
+            }
+            case ClassType ct:
+            {
+                var fname = dot.FieldName.Name;
+                if (ct.InstanceFields.TryGetValue(fname, out var field))
+                {
+                    CheckProtectedAccess(pc, dot.FieldName.Span, ct, fname);
+                    resultType = field.Type.ID;
+                }
+                else if (ct.Methods.TryGetValue(fname, out var method))
+                {
+                    CheckProtectedAccess(pc, dot.FieldName.Span, ct, fname);
+                    resultType = method.ID;
+                }
+                else if (ct.Getters.TryGetValue(fname, out var getter))
+                {
+                    resultType = getter.ReturnType.ID;
+                }
+                else if (ct.StaticMethods.TryGetValue(fname, out var staticMethod))
+                {
+                    resultType = staticMethod.ID;
+                }
+                else
+                {
+                    var found = false;
+                    var cur = ct.BaseClass;
+                    while (cur != null && !found)
+                    {
+                        if (cur.InstanceFields.TryGetValue(fname, out var pf)) { resultType = pf.Type.ID; found = true; }
+                        else if (cur.Methods.TryGetValue(fname, out var pm)) { resultType = pm.ID; found = true; }
+                        else if (cur.Getters.TryGetValue(fname, out var pg)) { resultType = pg.ReturnType.ID; found = true; }
+                        cur = cur.BaseClass;
+                    }
+                    if (!found) resultType = pc.Types.PrimAny.ID;
+                }
+                break;
+            }
+            case { Kind: TypeKind.PrimitiveAny }:
+                resultType = pc.Types.PrimAny.ID;
+                break;
+            default:
+                resultType = pc.Types.PrimAny.ID;
+                break;
+        }
+
+        return dot.IsOptional ? MakeNullable(pc, resultType) : resultType;
+    }
+
+    private void CheckProtectedAccess(PassContext pc, TextSpan span, ClassType classType, string memberName)
+    {
+        if (!classType.ProtectedMembers.Contains(memberName)) return;
+
+        var cur = classType.BaseClass;
+        while (cur != null)
+        {
+            if (cur.ProtectedMembers.Contains(memberName)) break;
+            cur = cur.BaseClass;
+        }
+    }
+
+    private TypID InferIndexAccess(PassContext pc, IndexAccessExpr idx)
+    {
+        var baseTyp = SynthesizeExpr(pc, idx.Object);
+        var indexTyp = SynthesizeExpr(pc, idx.Index);
+        EnsureNotNil(pc, idx.Object.Span, baseTyp);
+        if (IsNullable(pc, baseTyp))
+        {
+            baseTyp = StripNil(pc, baseTyp);
+        }
+
+        if (!pc.Pkg!.Types.GetByID(baseTyp, out var baseType))
+        {
+            return pc.Types.PrimAny.ID;
+        }
+
+        switch (baseType)
+        {
+            case TableArrayType at:
+                if (!IsTypeAssignable(pc, pc.Types.PrimNumber.ID, indexTyp) && indexTyp != pc.Types.PrimAny.ID)
+                {
+                    pc.Diag.Report(idx.Index.Span, DiagnosticCode.ErrTypeMismatch, "number", TypeName(pc, indexTyp));
+                }
+
+                return at.ElementType.ID;
+            case TableMapType mt:
+                if (!IsTypeAssignable(pc, mt.KeyType.ID, indexTyp) && indexTyp != pc.Types.PrimAny.ID)
+                {
+                    pc.Diag.Report(idx.Index.Span, DiagnosticCode.ErrTypeMismatch,
+                        TypeName(pc, mt.KeyType.ID), TypeName(pc, indexTyp));
+                }
+
+                return mt.ValueType.ID;
+            case not null when baseType.Kind == TypeKind.PrimitiveAny:
+                return pc.Types.PrimAny.ID;
+            case not null when baseType.Kind == TypeKind.PrimitiveString:
+                return pc.Types.PrimString.ID;
+            default:
+                pc.Diag.Report(idx.Object.Span, DiagnosticCode.ErrTypeNotIndexable, TypeName(pc, baseTyp));
+                return pc.Types.PrimAny.ID;
+        }
+    }
+
+    private TypID InferFunctionCall(PassContext pc, FunctionCallExpr call)
+    {
+        var argTypes = new List<TypID>();
+        foreach (var arg in call.Arguments)
+        {
+            argTypes.Add(SynthesizeExpr(pc, arg));
+        }
+
+        if (call.Callee is NameExpr ne && ne.Name.Overloads is { Count: > 1 } overloads)
+        {
+            var resolved = ResolveOverload(pc, call.Span, overloads, argTypes);
+            if (resolved != null)
+            {
+                ne.Name.Sym = resolved.Value.sym;
+                CheckCallArguments(pc, call.Span, resolved.Value.ft, argTypes);
+                var ret = resolved.Value.ft.ReturnType.ID;
+                return call.IsOptional ? MakeNullable(pc, ret) : ret;
+            }
+
+            return call.IsOptional ? MakeNullable(pc, pc.Types.PrimAny.ID) : pc.Types.PrimAny.ID;
+        }
+
+        var calleeTyp = SynthesizeExpr(pc, call.Callee);
+
+        if (call.IsOptional)
+        {
+            calleeTyp = StripNil(pc, calleeTyp);
+        }
+        else
+        {
+            EnsureNotNil(pc, call.Callee.Span, calleeTyp);
+            if (IsNullable(pc, calleeTyp))
+            {
+                calleeTyp = StripNil(pc, calleeTyp);
+            }
+        }
+
+        if (!pc.Pkg!.Types.GetByID(calleeTyp, out var calleeType))
+        {
+            return call.IsOptional ? MakeNullable(pc, pc.Types.PrimAny.ID) : pc.Types.PrimAny.ID;
+        }
+
+        if (calleeType is not FunctionType fnType)
+        {
+            if (calleeType.Kind == TypeKind.PrimitiveAny)
+            {
+                return call.IsOptional ? MakeNullable(pc, pc.Types.PrimAny.ID) : pc.Types.PrimAny.ID;
+            }
+
+            pc.Diag.Report(call.Callee.Span, DiagnosticCode.ErrTypeMismatch, "function", TypeName(pc, calleeTyp));
+            return pc.Types.PrimAny.ID;
+        }
+
+        CheckCallArguments(pc, call.Span, fnType, argTypes);
+        var resultType = fnType.ReturnType.ID;
+        return call.IsOptional ? MakeNullable(pc, resultType) : resultType;
+    }
+
+    private (SymID sym, FunctionType ft)? ResolveOverload(PassContext pc, TextSpan span, List<SymID> overloads, List<TypID> argTypes)
+    {
+        FunctionType? bestFn = null;
+        SymID bestSym = SymID.Invalid;
+        var bestScore = -1;
+
+        foreach (var symId in overloads)
+        {
+            if (!pc.Pkg!.Syms.GetByID(symId, out var sym)) continue;
+            if (!pc.Types.GetByID(sym.Type, out var typ) || typ is not FunctionType ft) continue;
+
+            var score = ScoreOverload(pc, ft, argTypes);
+            if (score > bestScore)
+            {
+                bestScore = score;
+                bestFn = ft;
+                bestSym = symId;
+            }
+        }
+
+        if (bestFn != null && bestScore >= 0)
+        {
+            return (bestSym, bestFn);
+        }
+
+        pc.Diag.Report(span, DiagnosticCode.ErrFuncParamMismatch, "overloaded", argTypes.Count);
+        return null;
+    }
+
+    private int ScoreOverload(PassContext pc, FunctionType ft, List<TypID> argTypes)
+    {
+        var paramCount = ft.ParamTypes.Count;
+        var argCount = argTypes.Count;
+        var minParams = ft.MinParamCount;
+
+        if (argCount < minParams) return -1;
+        if (argCount > paramCount && !ft.IsVararg)
+        {
+            if (ft.IsAsync && argCount == paramCount + 1)
+            {
+            }
+            else
+            {
+                var lastParam = paramCount > 0 ? ft.ParamTypes[paramCount - 1] : null;
+                if (lastParam is not { Kind: TypeKind.PrimitiveAny })
+                    return -1;
+            }
+        }
+
+        var score = 0;
+        for (var i = 0; i < paramCount && i < argCount; i++)
+        {
+            var paramType = ft.ParamTypes[i].ID;
+            var argType = argTypes[i];
+            if (paramType == argType)
+                score += 3;
+            else if (IsTypeAssignable(pc, paramType, argType))
+                score += 1;
+            else
+                return -1;
+        }
+
+        if (argCount == paramCount)
+            score += 1;
+
+        return score;
+    }
+
+    private TypID InferMethodCall(PassContext pc, MethodCallExpr mc)
+    {
+        var objTyp = SynthesizeExpr(pc, mc.Object);
+        EnsureNotNil(pc, mc.Object.Span, objTyp);
+        if (IsNullable(pc, objTyp))
+        {
+            objTyp = StripNil(pc, objTyp);
+        }
+
+        foreach (var arg in mc.Arguments)
+        {
+            SynthesizeExpr(pc, arg);
+        }
+
+        if (!pc.Pkg!.Types.GetByID(objTyp, out var objType))
+        {
+            return pc.Types.PrimAny.ID;
+        }
+
+        if (objType is StructType st)
+        {
+            var field = st.Fields.FirstOrDefault(f => f.Name.Name == mc.MethodName.Name);
+            if (field?.Type is FunctionType fnType)
+            {
+                return fnType.ReturnType.ID;
+            }
+        }
+
+        return pc.Types.PrimAny.ID;
+    }
+
+    private TypID InferTableConstructor(PassContext pc, TableConstructorExpr tc)
+    {
+        var tt = pc.Types;
+
+        if (tc.Fields.Count == 0)
+        {
+            return tt.ArrayOf(tt.PrimAny);
+        }
+
+        var allPositional = tc.Fields.All(f => f.Kind == TableFieldKind.Positional);
+        var allNamed = tc.Fields.All(f => f.Kind == TableFieldKind.Named);
+
+        if (allPositional)
+        {
+            var elemType = SynthesizeExpr(pc, tc.Fields[0].Value);
+            for (var i = 1; i < tc.Fields.Count; i++)
+            {
+                var et = SynthesizeExpr(pc, tc.Fields[i].Value);
+                if (!IsTypeAssignable(pc, elemType, et) && !IsTypeAssignable(pc, et, elemType))
+                {
+                    elemType = tt.PrimAny.ID;
+                }
+            }
+
+            return tt.ArrayOf(GetType(pc, elemType));
+        }
+
+        if (allNamed)
+        {
+            var fields = new List<StructType.Field>();
+            foreach (var field in tc.Fields)
+            {
+                var fValType = SynthesizeExpr(pc, field.Value);
+                fields.Add(new StructType.Field(field.Name!, GetType(pc, fValType)));
+            }
+
+            return tt.StructOf(fields);
+        }
+
+        var keyType = tt.PrimAny.ID;
+        var valueType = TypID.Invalid;
+        foreach (var field in tc.Fields)
+        {
+            TypID kt;
+            if (field.Key != null)
+            {
+                kt = SynthesizeExpr(pc, field.Key);
+            }
+            else if (field.Name != null)
+            {
+                kt = tt.PrimString.ID;
+            }
+            else
+            {
+                kt = tt.PrimNumber.ID;
+            }
+
+            var vt = SynthesizeExpr(pc, field.Value);
+            if (valueType == TypID.Invalid)
+            {
+                keyType = kt;
+                valueType = vt;
+            }
+            else
+            {
+                if (!IsTypeAssignable(pc, keyType, kt) && !IsTypeAssignable(pc, kt, keyType))
+                {
+                    keyType = tt.PrimAny.ID;
+                }
+
+                if (!IsTypeAssignable(pc, valueType, vt) && !IsTypeAssignable(pc, vt, valueType))
+                {
+                    valueType = tt.PrimAny.ID;
+                }
+            }
+        }
+
+        return tt.MapOf(GetType(pc, keyType), GetType(pc, valueType));
+    }
+
+    private void CheckCallArguments(PassContext pc, TextSpan span, FunctionType fnType, List<TypID> argTypes)
+    {
+        var paramCount = fnType.ParamTypes.Count;
+        var argCount = argTypes.Count;
+        var minParams = fnType.MinParamCount;
+
+        if (argCount < minParams)
+        {
+            pc.Diag.Report(span, DiagnosticCode.ErrFuncParamMismatch, minParams, argCount);
+            return;
+        }
+
+        if (argCount > paramCount && !fnType.IsVararg)
+        {
+            if (fnType.IsAsync && argCount == paramCount + 1)
+            {
+            }
+            else
+            {
+                var lastParam = paramCount > 0 ? fnType.ParamTypes[paramCount - 1] : null;
+                if (lastParam is not { Kind: TypeKind.PrimitiveAny })
+                {
+                    pc.Diag.Report(span, DiagnosticCode.ErrFuncParamMismatch, paramCount, argCount);
+                    return;
+                }
+            }
+        }
+
+        for (var i = 0; i < paramCount; i++)
+        {
+            if (i >= argCount) break;
+            var paramType = fnType.ParamTypes[i].ID;
+            var argType = argTypes[i];
+            if (!IsTypeAssignable(pc, paramType, argType))
+            {
+                if (IsNullable(pc, argType) && IsTypeAssignable(pc, paramType, StripNil(pc, argType)))
+                {
+                    EnsureNotNil(pc, span, argType);
+                }
+                else
+                {
+                    pc.Diag.Report(span, DiagnosticCode.ErrTypeMismatch,
+                        TypeName(pc, paramType), TypeName(pc, argType));
+                }
+            }
+        }
+
+        if (fnType.IsVararg && fnType.VarargType != null)
+        {
+            for (var i = paramCount; i < argCount; i++)
+            {
+                var argType = argTypes[i];
+                if (!IsTypeAssignable(pc, fnType.VarargType.ID, argType))
+                {
+                    pc.Diag.Report(span, DiagnosticCode.ErrTypeMismatch,
+                        TypeName(pc, fnType.VarargType.ID), TypeName(pc, argType));
+                }
+            }
+        }
+    }
+
+    private List<(TypID typ, TextSpan span)> CollectReturnTypes(PassContext pc, List<Stmt> stmts)
+    {
+        var result = new List<(TypID, TextSpan)>();
+        foreach (var stmt in stmts)
+        {
+            CollectReturnTypesStmt(pc, stmt, result);
+        }
+
+        return result;
+    }
+
+    private void CollectReturnTypesStmt(PassContext pc, Stmt stmt, List<(TypID, TextSpan)> result)
+    {
+        switch (stmt)
+        {
+            case ReturnStmt rs:
+                result.Add((ComputeReturnType(pc, rs.Values), rs.Span));
+                break;
+            case DoBlockStmt db:
+                foreach (var s in db.Body) CollectReturnTypesStmt(pc, s, result);
+                break;
+            case IfStmt ifs:
+                foreach (var s in ifs.Body) CollectReturnTypesStmt(pc, s, result);
+                foreach (var e in ifs.ElseIfs)
+                {
+                    foreach (var s in e.Body) CollectReturnTypesStmt(pc, s, result);
+                }
+
+                if (ifs.ElseBody != null)
+                {
+                    foreach (var s in ifs.ElseBody) CollectReturnTypesStmt(pc, s, result);
+                }
+
+                break;
+            case WhileStmt ws:
+                foreach (var s in ws.Body) CollectReturnTypesStmt(pc, s, result);
+                break;
+            case RepeatStmt rp:
+                foreach (var s in rp.Body) CollectReturnTypesStmt(pc, s, result);
+                break;
+            case NumericForStmt nf:
+                foreach (var s in nf.Body) CollectReturnTypesStmt(pc, s, result);
+                break;
+            case GenericForStmt gf:
+                foreach (var s in gf.Body) CollectReturnTypesStmt(pc, s, result);
+                break;
+        }
+    }
+
+    private TypID ComputeReturnType(PassContext pc, List<Expr> values)
+    {
+        if (values.Count == 0)
+        {
+            return pc.Types.PrimNil.ID;
+        }
+
+        if (values.Count == 1)
+        {
+            return values[0].Type != TypID.Invalid ? values[0].Type : SynthesizeExpr(pc, values[0]);
+        }
+
+        var fields = new List<TupleType.Field>();
+        foreach (var v in values)
+        {
+            var t = v.Type != TypID.Invalid ? v.Type : SynthesizeExpr(pc, v);
+            fields.Add(new TupleType.Field(GetType(pc, t)));
+        }
+
+        return pc.Types.TupleOf(fields);
+    }
+
+    private bool IsTerminator(Stmt stmt)
+    {
+        return stmt is ReturnStmt or BreakStmt or ContinueStmt or GotoStmt;
+    }
+
+    private bool IsTypeAssignable(PassContext pc, TypID dst, TypID src)
+    {
+        if (dst == src) return true;
+        if (dst == TypID.Invalid || src == TypID.Invalid) return false;
+        var tt = pc.Types;
+        if (dst == tt.PrimAny.ID || src == tt.PrimAny.ID) return true;
+
+        if (pc.Pkg!.Types.GetByID(dst, out var dstTpCheck) && dstTpCheck is TypeParameterType dstTp)
+        {
+            if (dstTp.ExtendsBound is { } eb) return IsTypeAssignable(pc, eb, src);
+            return true;
+        }
+        if (pc.Pkg.Types.GetByID(src, out var srcTpCheck) && srcTpCheck is TypeParameterType)
+        {
+            return true;
+        }
+
+        if (!pc.Config.Rules.StrictNil)
+        {
+            if (src == tt.PrimNil.ID) return true;
+        }
+
+        if (pc.Pkg!.Types.GetByID(src, out var srcEnumType) && srcEnumType is EnumType srcEnum)
+        {
+            if (dst == srcEnum.BaseType.ID) return true;
+        }
+
+        if (pc.Pkg!.Types.GetByID(dst, out var dstType) && dstType is UnionType unionDst)
+        {
+            foreach (var member in unionDst.Types)
+            {
+                if (IsTypeAssignable(pc, member.ID, src)) return true;
+            }
+
+            return false;
+        }
+
+        if (pc.Pkg.Types.GetByID(src, out var srcType) && srcType is UnionType unionSrc)
+        {
+            if (!pc.Config.Rules.StrictNil)
+            {
+                var nonNil = unionSrc.Types.Where(m => m.Kind != TypeKind.PrimitiveNil).ToList();
+                if (nonNil.Count < unionSrc.Types.Count)
+                {
+                    var stripped = nonNil.Count == 1 ? nonNil[0].ID : pc.Types.UnionOf(nonNil);
+                    return IsTypeAssignable(pc, dst, stripped);
+                }
+            }
+
+            foreach (var member in unionSrc.Types)
+            {
+                if (!IsTypeAssignable(pc, dst, member.ID)) return false;
+            }
+
+            return true;
+        }
+
+        if (pc.Pkg.Types.GetByID(dst, out var dstTypeNode) && pc.Pkg.Types.GetByID(src, out var srcTypeNode))
+        {
+            // Class extends Class / Class implements Interface / Interface extends Interface.
+            if (dstTypeNode is ClassType dstCls && srcTypeNode is ClassType srcCls)
+            {
+                var cur = srcCls.BaseClass;
+                while (cur != null)
+                {
+                    if (cur.ID == dstCls.ID) return true;
+                    cur = cur.BaseClass;
+                }
+            }
+
+            if (dstTypeNode is InterfaceType dstIface)
+            {
+                if (srcTypeNode is ClassType srcCls2 && ClassImplementsInterface(srcCls2, dstIface)) return true;
+                if (srcTypeNode is InterfaceType srcIface && InterfaceExtendsInterface(srcIface, dstIface)) return true;
+            }
+
+            // Covariant array element compatibility for ergonomics — Lua tables are
+            // mutable so this is not strictly sound, but matches user expectations.
+            if (dstTypeNode is TableArrayType dstArr && srcTypeNode is TableArrayType srcArr)
+            {
+                if (IsTypeAssignable(pc, dstArr.ElementType.ID, srcArr.ElementType.ID)) return true;
+            }
+        }
+
+        return StructEqual(pc, dst, src);
+    }
+
+    private static bool ClassImplementsInterface(ClassType cls, InterfaceType target)
+    {
+        var current = cls;
+        while (current != null)
+        {
+            foreach (var iface in current.Interfaces)
+                if (InterfaceExtendsInterface(iface, target)) return true;
+            current = current.BaseClass;
+        }
+        return false;
+    }
+
+    private static bool InterfaceExtendsInterface(InterfaceType iface, InterfaceType target)
+    {
+        if (iface.ID == target.ID) return true;
+        foreach (var b in iface.BaseInterfaces)
+            if (InterfaceExtendsInterface(b, target)) return true;
+        return false;
+    }
+
+    private bool StructEqual(PassContext pc, TypID a, TypID b)
+    {
+        if (a == b) return true;
+        if (!pc.Pkg!.Types.GetByID(a, out var ta)) return false;
+        if (!pc.Pkg.Types.GetByID(b, out var tb)) return false;
+        if (ta.Kind != tb.Kind) return false;
+
+        switch (ta)
+        {
+            case TableArrayType aa when tb is TableArrayType ba:
+                return aa.ElementType.ID == ba.ElementType.ID;
+            case TableMapType am when tb is TableMapType bm:
+                return am.KeyType.ID == bm.KeyType.ID && am.ValueType.ID == bm.ValueType.ID;
+            case TupleType at when tb is TupleType bt:
+                if (at.Fields.Count != bt.Fields.Count) return false;
+                for (var i = 0; i < at.Fields.Count; i++)
+                {
+                    if (at.Fields[i].Type.ID != bt.Fields[i].Type.ID) return false;
+                }
+
+                return true;
+            case FunctionType af when tb is FunctionType bf:
+                if (af.ParamTypes.Count != bf.ParamTypes.Count) return false;
+                for (var i = 0; i < af.ParamTypes.Count; i++)
+                {
+                    if (af.ParamTypes[i].ID != bf.ParamTypes[i].ID) return false;
+                }
+
+                return af.ReturnType.ID == bf.ReturnType.ID;
+            case StructType sa when tb is StructType sb:
+                if (sa.Fields.Count != sb.Fields.Count) return false;
+                foreach (var fa in sa.Fields)
+                {
+                    var fb = sb.Fields.FirstOrDefault(f => f.Name.Name == fa.Name.Name);
+                    if (fb == null || fb.Type.ID != fa.Type.ID) return false;
+                }
+
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private void EnsureAssignable(PassContext pc, TextSpan span, TypID expected, TypID actual)
+    {
+        if (IsTypeAssignable(pc, expected, actual)) return;
+
+        if (IsNullable(pc, actual) && IsTypeAssignable(pc, expected, StripNil(pc, actual)))
+        {
+            EnsureNotNil(pc, span, actual);
+            return;
+        }
+
+        pc.Diag.Report(span, DiagnosticCode.ErrTypeMismatch, TypeName(pc, expected), TypeName(pc, actual));
+    }
+
+    private void EnsureBoolLike(PassContext pc, TextSpan span, TypID t)
+    {
+        if (t == pc.Types.PrimAny.ID || t == pc.Types.PrimBool.ID) return;
+        pc.Diag.Report(span, DiagnosticCode.ErrTypeMismatch, "boolean", TypeName(pc, t));
+    }
+
+    private void EnsureConcatable(PassContext pc, TextSpan span, TypID t)
+    {
+        var tt = pc.Types;
+        if (t == tt.PrimAny.ID || t == tt.PrimString.ID || t == tt.PrimNumber.ID) return;
+        if (pc.Pkg!.Types.GetByID(t, out var typ) && typ is EnumType) return;
+        pc.Diag.Report(span, DiagnosticCode.ErrTypeMismatch, "string or number", TypeName(pc, t));
+    }
+
+    private bool IsConfiguredConcatOp(PassContext pc, BinaryOp op)
+    {
+        var configured = pc.Config.Code.ConcatOperator;
+        if (string.IsNullOrEmpty(configured)) return false;
+        var mapped = configured switch
+        {
+            "+" => BinaryOp.Add,
+            "-" => BinaryOp.Sub,
+            "*" => BinaryOp.Mul,
+            "/" => BinaryOp.Div,
+            "//" => BinaryOp.FloorDiv,
+            "%" => BinaryOp.Mod,
+            "^" => BinaryOp.Pow,
+            ".." => BinaryOp.Concat,
+            _ => (BinaryOp?)null
+        };
+        return mapped == op;
+    }
+
+    private bool IsNumberLike(PassContext pc, TypID t) =>
+        t == pc.Types.PrimNumber.ID || t == pc.Types.PrimAny.ID;
+
+    private bool IsStringLike(PassContext pc, TypID t) =>
+        t == pc.Types.PrimString.ID || t == pc.Types.PrimAny.ID;
+
+    private bool IsTableLike(PassContext pc, TypID t)
+    {
+        if (!pc.Pkg!.Types.GetByID(t, out var type)) return false;
+        return type.Kind is TypeKind.TableArray or TypeKind.TableMap or TypeKind.Struct;
+    }
+
+    private TypID? TryGetMetamethodReturn(PassContext pc, TypID operandType, string metamethodName)
+    {
+        if (!pc.Pkg!.Types.GetByID(operandType, out var t)) return null;
+        if (t is StructType st)
+        {
+            var metaField = st.Fields.FirstOrDefault(f => f.IsMeta && f.Name.Name == metamethodName);
+            if (metaField?.Type is FunctionType ft) return ft.ReturnType.ID;
+            return null;
+        }
+        if (t is ClassType ct)
+        {
+            var cur = ct;
+            while (cur != null)
+            {
+                if (cur.Methods.TryGetValue(metamethodName, out var fn)) return fn.ReturnType.ID;
+                cur = cur.BaseClass;
+            }
+            return null;
+        }
+        return null;
+    }
+
+    private static string? BinaryOpToMetamethod(BinaryOp op) => op switch
+    {
+        BinaryOp.Add => "__add",
+        BinaryOp.Sub => "__sub",
+        BinaryOp.Mul => "__mul",
+        BinaryOp.Div => "__div",
+        BinaryOp.FloorDiv => "__idiv",
+        BinaryOp.Mod => "__mod",
+        BinaryOp.Pow => "__pow",
+        BinaryOp.Concat => "__concat",
+        BinaryOp.Eq => "__eq",
+        BinaryOp.Lt => "__lt",
+        BinaryOp.Lte => "__le",
+        BinaryOp.BitwiseAnd => "__band",
+        BinaryOp.BitwiseOr => "__bor",
+        BinaryOp.BitwiseXor => "__bxor",
+        BinaryOp.LShift => "__shl",
+        BinaryOp.RShift => "__shr",
+        _ => null
+    };
+
+    private static string? UnaryOpToMetamethod(UnaryOp op) => op switch
+    {
+        UnaryOp.Negate => "__unm",
+        UnaryOp.Length => "__len",
+        UnaryOp.BitwiseNot => "__bnot",
+        _ => null
+    };
+
+    private TypID LookupSymbolType(PassContext pc, SymID sym)
+    {
+        if (sym == SymID.Invalid) return pc.Types.PrimAny.ID;
+        if (_narrowed.TryGetValue(new SymPath(sym), out var narrowedType)) return narrowedType;
+        if (!pc.Pkg!.Syms.GetByID(sym, out var symbol)) return pc.Types.PrimAny.ID;
+        return symbol.Type != TypID.Invalid ? symbol.Type : pc.Types.PrimAny.ID;
+    }
+
+    /// <summary>
+    /// Builds an AccessPath for an expression if it represents a stable, narrowable location:
+    /// a NameExpr (SymPath) or a chain of non-optional dot accesses rooted in a NameExpr (FieldPath).
+    /// Returns null for any other shape (calls, indices, optional chains, etc.).
+    /// </summary>
+    private AccessPath? GetAccessPath(Expr e)
+    {
+        var cur = e is ParenExpr p ? p.Inner : e;
+        switch (cur)
+        {
+            case NameExpr ne:
+                if (ne.Name.Sym == SymID.Invalid) return null;
+                return new SymPath(ne.Name.Sym);
+            case DotAccessExpr { IsOptional: false } d:
+                var baseP = GetAccessPath(d.Object);
+                return baseP == null ? null : new FieldPath(baseP, d.FieldName.Name);
+            default:
+                return null;
+        }
+    }
+
+    private bool IsNullable(PassContext pc, TypID id)
+    {
+        if (id == pc.Types.PrimNil.ID) return true;
+        if (!pc.Pkg!.Types.GetByID(id, out var t)) return false;
+        if (t is UnionType u)
+        {
+            foreach (var member in u.Types)
+            {
+                if (member.Kind == TypeKind.PrimitiveNil) return true;
+            }
+        }
+
+        return false;
+    }
+
+    private TypID StripNil(PassContext pc, TypID id)
+    {
+        if (id == pc.Types.PrimNil.ID) return pc.Types.PrimAny.ID;
+        if (!pc.Pkg!.Types.GetByID(id, out var t)) return id;
+        if (t is UnionType u)
+        {
+            var nonNil = u.Types.Where(m => m.Kind != TypeKind.PrimitiveNil).ToList();
+            if (nonNil.Count == 0) return pc.Types.PrimAny.ID;
+            if (nonNil.Count == 1) return nonNil[0].ID;
+            return pc.Types.UnionOf(nonNil);
+        }
+
+        return id;
+    }
+
+    private TypID MakeNullable(PassContext pc, TypID id)
+    {
+        if (IsNullable(pc, id)) return id;
+        return pc.Types.UnionOf([GetType(pc, id), pc.Types.PrimNil]);
+    }
+
+    private bool IsAlwaysNonNil(PassContext pc, TypID id)
+    {
+        if (id == pc.Types.PrimAny.ID) return true;
+        if (id == pc.Types.PrimNil.ID) return false;
+        return !IsNullable(pc, id);
+    }
+
+    private void EnsureNotNil(PassContext pc, TextSpan span, TypID t)
+    {
+        if (!pc.Config.Rules.StrictNil) return;
+        if (!IsAlwaysNonNil(pc, t))
+        {
+            pc.Diag.Report(span, DiagnosticCode.ErrPossiblyNil, TypeName(pc, t));
+        }
+    }
+
+    /// <summary>
+    /// Analyzes a condition expression and returns the set of access-path narrowings that apply
+    /// in the then-branch and the else-branch respectively. Handles nil checks, `is` checks,
+    /// boolean negation (`not`), and conjunctions/disjunctions of those forms.
+    /// </summary>
+    private (List<(AccessPath path, TypID typ)> thenNarrows, List<(AccessPath path, TypID typ)> elseNarrows)
+        AnalyzeCondition(PassContext pc, Expr cond)
+    {
+        var c = cond is ParenExpr p ? p.Inner : cond;
+        var thenN = new List<(AccessPath, TypID)>();
+        var elseN = new List<(AccessPath, TypID)>();
+
+        if (c is UnaryExpr un && un.Op == UnaryOp.LogicalNot)
+        {
+            var (it, ie) = AnalyzeCondition(pc, un.Operand);
+            return (ie, it);
+        }
+
+        if (c is BinaryExpr binAnd && binAnd.Op == BinaryOp.And)
+        {
+            var (lt, _) = AnalyzeCondition(pc, binAnd.Left);
+            var (rt, _) = AnalyzeCondition(pc, binAnd.Right);
+            thenN.AddRange(lt);
+            thenN.AddRange(rt);
+            return (thenN, elseN);
+        }
+
+        if (c is BinaryExpr binOr && binOr.Op == BinaryOp.Or)
+        {
+            var (_, le) = AnalyzeCondition(pc, binOr.Left);
+            var (_, re) = AnalyzeCondition(pc, binOr.Right);
+            elseN.AddRange(le);
+            elseN.AddRange(re);
+            return (thenN, elseN);
+        }
+
+        if (c is TypeCheckExpr tchk)
+        {
+            var path = GetAccessPath(tchk.Inner);
+            if (path != null && tchk.TargetType.ResolvedType != TypID.Invalid)
+            {
+                var current = ResolveAccessPathType(pc, path);
+                thenN.Add((path, tchk.TargetType.ResolvedType));
+                var subtracted = SubtractType(pc, current, tchk.TargetType.ResolvedType);
+                if (subtracted != TypID.Invalid)
+                    elseN.Add((path, subtracted));
+            }
+            return (thenN, elseN);
+        }
+
+        if (c is BinaryExpr binEq && (binEq.Op == BinaryOp.Eq || binEq.Op == BinaryOp.Neq))
+        {
+            AccessPath? path = null;
+            if (binEq.Right is NilLiteralExpr) path = GetAccessPath(binEq.Left);
+            else if (binEq.Left is NilLiteralExpr) path = GetAccessPath(binEq.Right);
+
+            if (path != null)
+            {
+                var current = ResolveAccessPathType(pc, path);
+                if (IsNullable(pc, current))
+                {
+                    var stripped = StripNil(pc, current);
+                    var nilTyp = pc.Types.PrimNil.ID;
+                    if (binEq.Op == BinaryOp.Neq)
+                    {
+                        thenN.Add((path, stripped));
+                        elseN.Add((path, nilTyp));
+                    }
+                    else
+                    {
+                        thenN.Add((path, nilTyp));
+                        elseN.Add((path, stripped));
+                    }
+                }
+            }
+            return (thenN, elseN);
+        }
+
+        return (thenN, elseN);
+    }
+
+    /// <summary>
+    /// Returns the type that remains after removing <paramref name="toRemove"/> from <paramref name="src"/>.
+    /// Currently supports subtraction from union types only; returns TypID.Invalid when no meaningful
+    /// subtraction is possible.
+    /// </summary>
+    private TypID SubtractType(PassContext pc, TypID src, TypID toRemove)
+    {
+        if (src == toRemove) return TypID.Invalid;
+        if (!pc.Pkg!.Types.GetByID(src, out var srcType)) return TypID.Invalid;
+        if (srcType is not UnionType union) return TypID.Invalid;
+
+        var remaining = union.Types.Where(t => t.ID != toRemove).ToList();
+        if (remaining.Count == 0) return TypID.Invalid;
+        if (remaining.Count == union.Types.Count) return TypID.Invalid;
+        if (remaining.Count == 1) return remaining[0].ID;
+        return pc.Types.UnionOf(remaining);
+    }
+
+    /// <summary>
+    /// Resolves the current (possibly narrowed) type for an AccessPath. Walks the field chain
+    /// against the underlying StructType if no narrow is registered for the exact path.
+    /// </summary>
+    private TypID ResolveAccessPathType(PassContext pc, AccessPath path)
+    {
+        if (_narrowed.TryGetValue(path, out var narrowed)) return narrowed;
+        switch (path)
+        {
+            case SymPath sp:
+                if (!pc.Pkg!.Syms.GetByID(sp.Sym, out var sym)) return pc.Types.PrimAny.ID;
+                return sym.Type != TypID.Invalid ? sym.Type : pc.Types.PrimAny.ID;
+            case FieldPath fp:
+            {
+                var baseType = ResolveAccessPathType(pc, fp.Base);
+                if (!pc.Pkg!.Types.GetByID(baseType, out var t)) return pc.Types.PrimAny.ID;
+                if (t is StructType st)
+                {
+                    var f = st.Fields.FirstOrDefault(x => x.Name.Name == fp.Field);
+                    return f?.Type.ID ?? pc.Types.PrimAny.ID;
+                }
+
+                return pc.Types.PrimAny.ID;
+            }
+            default:
+                return pc.Types.PrimAny.ID;
+        }
+    }
+
+    /// <summary>
+    /// Verifies that an if/elseif chain without an else branch covers every case of its scrutinee when
+    /// matching on a union type via `is` or an enum type via equality with enum members. Emits
+    /// <see cref="DiagnosticCode.ErrNonExhaustiveMatch"/> for each missing case. Only runs when
+    /// <see cref="RulesSection.ExhaustiveMatch"/> is enabled.
+    /// </summary>
+    private void CheckExhaustiveMatch(PassContext pc, IfStmt ifStmt)
+    {
+        var level = pc.Config.Rules.ExhaustiveMatch;
+        if (level == ExhaustiveMatchLevel.None) return;
+        if (level == ExhaustiveMatchLevel.Relaxed && ifStmt.ElseBody != null) return;
+
+        var conditions = new List<Expr>(1 + ifStmt.ElseIfs.Count) { ifStmt.Condition };
+        foreach (var ei in ifStmt.ElseIfs) conditions.Add(ei.Condition);
+
+        AccessPath? scrutPath = null;
+        var cases = new List<MatchCase>(conditions.Count);
+
+        foreach (var cond in conditions)
+        {
+            var extracted = ExtractMatchCase(pc, cond);
+            if (extracted == null) return;
+            var (path, mc) = extracted.Value;
+            if (scrutPath == null) scrutPath = path;
+            else if (!scrutPath.Equals(path)) return;
+            cases.Add(mc);
+        }
+
+        if (scrutPath == null || cases.Count == 0) return;
+
+        if (cases.All(c => c is TypeMatchCase))
+        {
+            var scrutType = ResolveAccessPathType(pc, scrutPath);
+            if (!pc.Pkg!.Types.GetByID(scrutType, out var t) || t is not UnionType union) return;
+
+            var covered = cases.Cast<TypeMatchCase>().Select(c => c.TargetType).ToHashSet();
+            var missing = union.Types.Where(m => !covered.Contains(m.ID)).ToList();
+            if (missing.Count == 0) return;
+
+            var missingNames = string.Join(", ", missing.Select(m => m.Key.Value));
+            pc.Diag.Report(ifStmt.Span, DiagnosticCode.ErrNonExhaustiveMatch,
+                union.Key.Value, missingNames);
+            return;
+        }
+
+        if (cases.All(c => c is EnumMemberMatchCase))
+        {
+            var first = (EnumMemberMatchCase)cases[0];
+            if (cases.Cast<EnumMemberMatchCase>().Any(c => c.EnumTypeId != first.EnumTypeId)) return;
+            if (!pc.Pkg!.Types.GetByID(first.EnumTypeId, out var t) || t is not EnumType enumType) return;
+
+            var covered = cases.Cast<EnumMemberMatchCase>().Select(c => c.Member).ToHashSet();
+            var missing = enumType.Members.Where(m => !covered.Contains(m.Name)).ToList();
+            if (missing.Count == 0) return;
+
+            var missingNames = string.Join(", ", missing.Select(m => enumType.Name + "." + m.Name));
+            pc.Diag.Report(ifStmt.Span, DiagnosticCode.ErrNonExhaustiveMatch,
+                enumType.Name, missingNames);
+        }
+    }
+
+    private void CheckExhaustiveMatch(PassContext pc, MatchStmt matchStmt)
+    {
+        var level = pc.Config.Rules.ExhaustiveMatch;
+        if (level == ExhaustiveMatchLevel.None) return;
+
+        var hasWildcard = matchStmt.Arms.Any(a => a.Pattern.Kind == MatchPatternKind.Wildcard);
+        if (level == ExhaustiveMatchLevel.Relaxed && hasWildcard) return;
+
+        var scrutType = matchStmt.Scrutinee.Type;
+        if (scrutType == TypID.Invalid) return;
+        if (!pc.Pkg!.Types.GetByID(scrutType, out var t)) return;
+
+        if (t is EnumType enumType)
+        {
+            if (level == ExhaustiveMatchLevel.Explicit && hasWildcard)
+            {
+                var allMembers = string.Join(", ", enumType.Members.Select(m => enumType.Name + "." + m.Name));
+                pc.Diag.Report(matchStmt.Span, DiagnosticCode.ErrNonExhaustiveMatch,
+                    enumType.Name, allMembers + " (wildcard not allowed in explicit mode)");
+                return;
+            }
+
+            var covered = new HashSet<string>();
+            foreach (var arm in matchStmt.Arms)
+            {
+                if (arm.Pattern.Kind == MatchPatternKind.Value && arm.Pattern.ValueExpr is DotAccessExpr dot)
+                    covered.Add(dot.FieldName.Name);
+            }
+
+            var missing = enumType.Members.Where(m => !covered.Contains(m.Name)).ToList();
+            if (missing.Count == 0 || hasWildcard) return;
+
+            var missingNames = string.Join(", ", missing.Select(m => enumType.Name + "." + m.Name));
+            pc.Diag.Report(matchStmt.Span, DiagnosticCode.ErrNonExhaustiveMatch,
+                enumType.Name, missingNames);
+            return;
+        }
+
+        if (t is UnionType union)
+        {
+            if (level == ExhaustiveMatchLevel.Explicit && hasWildcard) return;
+
+            var covered = new HashSet<TypID>();
+            foreach (var arm in matchStmt.Arms)
+            {
+                if (arm.Pattern.Kind == MatchPatternKind.TypeBinding && arm.Pattern.TypeRef != null)
+                    covered.Add(arm.Pattern.TypeRef.ResolvedType);
+            }
+
+            var missing = union.Types.Where(m => !covered.Contains(m.ID)).ToList();
+            if (missing.Count == 0 || hasWildcard) return;
+
+            var missingNames = string.Join(", ", missing.Select(m => m.Key.Value));
+            pc.Diag.Report(matchStmt.Span, DiagnosticCode.ErrNonExhaustiveMatch,
+                union.Key.Value, missingNames);
+        }
+    }
+
+    private void CheckMatchPatternType(PassContext pc, TypID scrutType, TypID patternType, TextSpan span)
+    {
+        if (scrutType == TypID.Invalid || patternType == TypID.Invalid) return;
+        if (scrutType == pc.Types.PrimAny.ID || patternType == pc.Types.PrimAny.ID) return;
+        if (IsTypeAssignable(pc, scrutType, patternType)) return;
+        if (IsTypeAssignable(pc, patternType, scrutType)) return;
+
+        pc.Diag.Report(span, DiagnosticCode.ErrTypeMismatch,
+            TypeName(pc, scrutType), TypeName(pc, patternType));
+    }
+
+    private void CheckMatchPatternTypeBinding(PassContext pc, TypID scrutType, TypeRef typeRef, TextSpan span)
+    {
+        if (scrutType == TypID.Invalid || typeRef.ResolvedType == TypID.Invalid) return;
+        if (scrutType == pc.Types.PrimAny.ID) return;
+
+        if (!pc.Pkg!.Types.GetByID(scrutType, out var st)) return;
+        if (st is UnionType union)
+        {
+            if (union.Types.Any(m => IsTypeAssignable(pc, m.ID, typeRef.ResolvedType))) return;
+        }
+        else
+        {
+            if (IsTypeAssignable(pc, scrutType, typeRef.ResolvedType)) return;
+            if (IsTypeAssignable(pc, typeRef.ResolvedType, scrutType)) return;
+        }
+
+        pc.Diag.Report(span, DiagnosticCode.ErrTypeMismatch,
+            TypeName(pc, scrutType), TypeName(pc, typeRef.ResolvedType));
+    }
+
+    /// <summary>
+    /// Extracts a single match case from a branch condition. Returns null if the condition is not a
+    /// recognized match form (type test `x is T` or enum equality `x == Enum.Member`).
+    /// </summary>
+    private (AccessPath path, MatchCase mc)? ExtractMatchCase(PassContext pc, Expr cond)
+    {
+        var c = cond is ParenExpr p ? p.Inner : cond;
+
+        if (c is TypeCheckExpr tchk)
+        {
+            var path = GetAccessPath(tchk.Inner);
+            if (path == null || tchk.TargetType.ResolvedType == TypID.Invalid) return null;
+            return (path, new TypeMatchCase(tchk.TargetType.ResolvedType));
+        }
+
+        if (c is BinaryExpr bin && bin.Op == BinaryOp.Eq)
+        {
+            if (bin.Right is DotAccessExpr rd && IsEnumMemberRef(pc, rd))
+            {
+                var path = GetAccessPath(bin.Left);
+                if (path == null) return null;
+                return (path, new EnumMemberMatchCase(rd.Type, rd.FieldName.Name));
+            }
+
+            if (bin.Left is DotAccessExpr ld && IsEnumMemberRef(pc, ld))
+            {
+                var path = GetAccessPath(bin.Right);
+                if (path == null) return null;
+                return (path, new EnumMemberMatchCase(ld.Type, ld.FieldName.Name));
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Returns true when the dot access refers to a member of an enum type (its expression type is
+    /// an <see cref="EnumType"/>).
+    /// </summary>
+    private bool IsEnumMemberRef(PassContext pc, DotAccessExpr dot)
+    {
+        if (dot.Type == TypID.Invalid) return false;
+        return pc.Pkg!.Types.GetByID(dot.Type, out var t) && t is EnumType;
+    }
+
+    /// <summary>
+    /// Applies a batch of access-path narrowings, returning a snapshot for restoration via PopAllNarrows.
+    /// </summary>
+    private List<(AccessPath path, TypID prev, bool hadPrev)> PushAllNarrows(List<(AccessPath path, TypID typ)> narrows)
+    {
+        var saved = new List<(AccessPath, TypID, bool)>();
+        foreach (var (path, typ) in narrows)
+        {
+            var hadPrev = _narrowed.TryGetValue(path, out var prev);
+            _narrowed[path] = typ;
+            saved.Add((path, hadPrev ? prev : TypID.Invalid, hadPrev));
+        }
+        return saved!;
+    }
+
+    /// <summary>
+    /// Restores narrowings captured by PushAllNarrows, in reverse order.
+    /// </summary>
+    private void PopAllNarrows(List<(AccessPath path, TypID prev, bool hadPrev)> saved)
+    {
+        for (var i = saved.Count - 1; i >= 0; i--)
+        {
+            var (path, prev, hadPrev) = saved[i];
+            if (hadPrev) _narrowed[path] = prev;
+            else _narrowed.Remove(path);
+        }
+    }
+
+    private Type GetType(PassContext pc, TypID id)
+    {
+        if (id == TypID.Invalid) return pc.Types.PrimAny;
+        return pc.Pkg!.Types.GetByID(id, out var t) ? t : pc.Types.PrimAny;
+    }
+
+    private string TypeName(PassContext pc, TypID id)
+    {
+        if (id == TypID.Invalid) return "<invalid>";
+        return pc.Pkg!.Types.GetByID(id, out var t) ? t.Key.Value : "<unknown>";
+    }
+}

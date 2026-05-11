@@ -1,0 +1,34 @@
+-- Console / prompt utilities. Accessible as the global `console`.
+-- Interactive prompts fall back to defaults when stdin/stdout is redirected.
+
+declare interface Spinner
+    update: (string) -> nil
+    stop: (boolean?, string?) -> nil
+    succeed: (string?) -> nil
+    fail: (string?) -> nil
+end
+
+declare interface ProgressBar
+    update: (number, string?) -> nil
+    increment: (number?) -> nil
+    setMessage: (string) -> nil
+    finish: (string?) -> nil
+end
+
+declare console: {
+    print: (string) -> nil,
+    info: (string) -> nil,
+    success: (string) -> nil,
+    warn: (string) -> nil,
+    error: (string) -> nil,
+    header: (string) -> nil,
+    dim: (string) -> nil,
+    blank: () -> nil,
+    input: (string, string?) -> string,
+    password: (string) -> string,
+    confirm: (string, boolean?) -> boolean,
+    select: (string, string[], number?) -> string,
+    multiselect: (string, string[], string[]?) -> string[],
+    spinner: (string) -> Spinner,
+    progress: (number, string?) -> ProgressBar,
+}

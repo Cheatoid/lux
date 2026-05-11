@@ -1,0 +1,7 @@
+-- JSON encoder/decoder built on System.Text.Json. Accessible as the global `json`.
+
+declare json: {
+    encode: (any, boolean?) -> string,
+    decode: (string) -> any,
+    pretty: (any) -> string,
+}

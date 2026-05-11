@@ -1,0 +1,61 @@
+import { section, expectEq, expect } from "_runner"
+
+class Animal
+    name: string
+    constructor(name: string)
+        self.name = name
+    end
+end
+
+class Dog extends Animal
+    constructor(name: string)
+        super(name)
+    end
+end
+
+class Bird extends Animal
+    constructor(name: string)
+        super(name)
+    end
+end
+
+local function classify(n: number): string
+    return match n
+        case 0 then "zero"
+        case 1 then "one"
+        case _ when n < 0 then "negative"
+        case _ then "many"
+    end
+end
+
+local function describe(a: Animal): string
+    return match a
+        case d: Dog then "dog named " .. d.name
+        case b: Bird then "bird named " .. b.name
+        case _ then "something named " .. a.name
+    end
+end
+
+export function run(): nil
+    section("pattern matching")
+
+    -- Match expression with value/wildcard/guard
+    expectEq("match value 0", classify(0), "zero")
+    expectEq("match value 1", classify(1), "one")
+    expectEq("match guard <0", classify(-3), "negative")
+    expectEq("match wildcard", classify(42), "many")
+
+    -- Match statement form
+    local mut tag: string = ""
+    match "hello"
+        case "hi" then tag = "casual"
+        case "hello" then tag = "polite"
+        case _ then tag = "?"
+    end
+    expectEq("match stmt string", tag, "polite")
+
+    -- Type-pattern with binding
+    expectEq("match type Dog", describe(new Dog("Rex")), "dog named Rex")
+    expectEq("match type Bird", describe(new Bird("Tweety")), "bird named Tweety")
+    expectEq("match type fallback", describe(new Animal("?")), "something named ?")
+end

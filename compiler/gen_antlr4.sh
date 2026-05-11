@@ -1,0 +1,1 @@
+antlr4 -Dlanguage=CSharp -visitor -o CodeAnalysis Lux.g4

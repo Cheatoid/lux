@@ -1,0 +1,46 @@
+import { section, expectEq, expect } from "_runner"
+
+interface Greetable
+    function greet(): string
+end
+
+interface Named
+    name: string
+end
+
+interface Printable extends Greetable
+    function shout(): string
+end
+
+class Robot implements Printable, Named
+    name: string
+
+    constructor(name: string)
+        self.name = name
+    end
+
+    function greet(): string
+        return "beep, I am " .. self.name
+    end
+
+    function shout(): string
+        return string.upper(self:greet())
+    end
+end
+
+local function callGreet(g: Greetable): string
+    return g:greet()
+end
+
+export function run(): nil
+    section("interfaces")
+
+    local r = new Robot("R2")
+
+    expectEq("interface field via class", r.name, "R2")
+    expectEq("interface method", r:greet(), "beep, I am R2")
+    expectEq("inherited interface method", r:shout(), "BEEP, I AM R2")
+
+    -- Pass class instance through an interface-typed parameter
+    expectEq("polymorphic call", callGreet(r), "beep, I am R2")
+end

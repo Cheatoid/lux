@@ -1,0 +1,30 @@
+--- @log — prepends a `print("[log] ...")` statement to a function's body so
+--- every call announces itself at runtime. Demonstrates the annotation
+--- pipeline: the compiler hands `apply` the encoded FunctionDecl, the
+--- annotation mutates it via the `ir` helpers, and the rewritten node is
+--- spliced back into the program before the rest of the passes run.
+---
+--- Usage:
+---   @log                       function greet() ... end
+---   @log("starting work")      function work() ... end
+
+export local annotation = {
+    target = "Function",
+    params = {
+        message = { type = "string", required = false }
+    }
+}
+
+--- Receives the target FunctionDecl as a Lua table (camelCased property
+--- names, `__kind = "FunctionDecl"`) and the validated `args` dictionary.
+--- Returns the modified declaration; the compiler replaces the original
+--- in-place with what we hand back.
+export function apply(target, args)
+    local fnName = target.namePath[1].name
+    local label = args.message or fnName
+    local logStmt = ir.exprStmt(ir.call("print", {
+        ir.stringLiteral("[log] " .. label)
+    }))
+    table.insert(target.body, 1, logStmt)
+    return target
+end

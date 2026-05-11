@@ -1,0 +1,218 @@
+name: Release
+
+# Triggered when a tag of the form v*.*.* is pushed. Builds the lux CLI as a
+# single self-contained binary for every supported platform/arch, packages the
+# result + LICENSE + README into a per-platform archive, and uploads everything
+# to the GitHub Release matching the tag.
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v0.1.0). Leave empty when triggered via tag push.'
+        required: false
+
+permissions:
+  contents: write   # needed to create / update the GitHub Release
+
+jobs:
+  build:
+    name: build (${{ matrix.rid }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rid: linux-x64
+            archive: tar
+          - os: ubuntu-latest
+            rid: linux-arm64
+            archive: tar
+          - os: macos-13
+            rid: osx-x64
+            archive: tar
+          - os: macos-14
+            rid: osx-arm64
+            archive: tar
+          - os: windows-latest
+            rid: win-x64
+            archive: zip
+          - os: windows-latest
+            rid: win-arm64
+            archive: zip
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore solution
+        run: dotnet restore Lux.sln
+
+      - name: Publish lux CLI (${{ matrix.rid }})
+        shell: bash
+        run: |
+          # SingleFile + IncludeAllContentForSelfExtract: produces one apphost
+          # that self-extracts every assembly and native library to disk on
+          # first launch. Needed so `lux compile` can locate Lux.Runtime.dll
+          # via AppContext.BaseDirectory (Assembly.Location is empty for
+          # embedded single-file assemblies).
+          dotnet publish compiler/Lux.csproj \
+            -c Release \
+            -r ${{ matrix.rid }} \
+            --self-contained true \
+            -p:PublishSingleFile=true \
+            -p:IncludeNativeLibrariesForSelfExtract=true \
+            -p:IncludeAllContentForSelfExtract=true \
+            -p:EnableCompressionInSingleFile=true \
+            -p:InvariantGlobalization=true \
+            -p:DebugType=None \
+            -p:DebugSymbols=false \
+            -o publish/${{ matrix.rid }}
+
+      - name: Stage release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGE="stage/${{ matrix.rid }}"
+          mkdir -p "$STAGE"
+
+          # Pick the executable name based on the target platform. Windows
+          # publish drops Lux.exe; everything else produces a bare Lux binary
+          # (we rename to lowercase `lux` for nicer UX).
+          if [[ "${{ matrix.rid }}" == win-* ]]; then
+            cp "publish/${{ matrix.rid }}/Lux.exe" "$STAGE/lux.exe"
+          else
+            cp "publish/${{ matrix.rid }}/Lux" "$STAGE/lux"
+            chmod +x "$STAGE/lux"
+          fi
+
+          cp LICENSE "$STAGE/"
+          cp README.md "$STAGE/"
+
+          # Ship the docs alongside so offline users have the full language
+          # reference packaged with the binary.
+          cp -R docs "$STAGE/docs"
+
+      - name: Package (tar.gz)
+        if: matrix.archive == 'tar'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ARCHIVE="lux-${{ matrix.rid }}.tar.gz"
+          tar -C stage/${{ matrix.rid }} -czf "$ARCHIVE" .
+          shasum -a 256 "$ARCHIVE" > "$ARCHIVE.sha256"
+
+      - name: Package (zip)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $archive = "lux-${{ matrix.rid }}.zip"
+          Compress-Archive -Path "stage/${{ matrix.rid }}/*" -DestinationPath $archive -Force
+          $hash = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLower()
+          "$hash  $archive" | Out-File -FilePath "$archive.sha256" -Encoding ASCII
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lux-${{ matrix.rid }}
+          path: |
+            lux-${{ matrix.rid }}.tar.gz
+            lux-${{ matrix.rid }}.zip
+            lux-${{ matrix.rid }}.tar.gz.sha256
+            lux-${{ matrix.rid }}.zip.sha256
+          if-no-files-found: ignore
+          retention-days: 14
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve tag name
+        id: tag
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ github.event.inputs.tag }}" ]]; then
+            echo "name=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la artifacts/
+
+      - name: Build release notes
+        id: notes
+        shell: bash
+        run: |
+          {
+            echo "## Lux ${{ steps.tag.outputs.name }}"
+            echo ""
+            echo "Self-contained binary builds for every supported platform."
+            echo "Each archive contains the \`lux\` executable, this release's"
+            echo "LICENSE, README, and the full \`docs/\` reference."
+            echo ""
+            echo "### Downloads"
+            echo ""
+            echo "| Platform        | Archive                                |"
+            echo "|-----------------|----------------------------------------|"
+            echo "| Linux x64       | \`lux-linux-x64.tar.gz\`               |"
+            echo "| Linux arm64     | \`lux-linux-arm64.tar.gz\`             |"
+            echo "| macOS x64       | \`lux-osx-x64.tar.gz\`                 |"
+            echo "| macOS arm64     | \`lux-osx-arm64.tar.gz\` (Apple Silicon) |"
+            echo "| Windows x64     | \`lux-win-x64.zip\`                    |"
+            echo "| Windows arm64   | \`lux-win-arm64.zip\`                  |"
+            echo ""
+            echo "SHA-256 checksums are published alongside each archive."
+            echo ""
+            echo "### Install"
+            echo ""
+            echo "\`\`\`bash"
+            echo "# Linux / macOS"
+            echo "tar xzf lux-linux-x64.tar.gz"
+            echo "sudo mv lux /usr/local/bin/"
+            echo "lux version"
+            echo "\`\`\`"
+            echo ""
+            echo "Or extract the Windows archive and put \`lux.exe\` somewhere on \`%PATH%\`."
+            echo ""
+            echo "### What's changed"
+            echo ""
+            echo "See the [full commit log](https://github.com/${{ github.repository }}/commits/${{ steps.tag.outputs.name }})."
+          } > release-notes.md
+          cat release-notes.md
+
+      - name: Create / update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          name: Lux ${{ steps.tag.outputs.name }}
+          body_path: release-notes.md
+          draft: false
+          prerelease: ${{ contains(steps.tag.outputs.name, '-') }}
+          files: |
+            artifacts/lux-*.tar.gz
+            artifacts/lux-*.zip
+            artifacts/lux-*.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

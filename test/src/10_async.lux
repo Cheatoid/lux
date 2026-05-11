@@ -1,0 +1,40 @@
+import { section, expectEq, expect } from "_runner"
+
+--- Pretend "async" primitive: takes a callback and invokes it synchronously
+--- with the given value. `await` adapts to this callback shape automatically.
+local function instant(value: string, callback: (string) -> nil): nil
+    callback(value)
+end
+
+async function fetchHello(): string
+    local greet = await instant("hello")
+    return greet .. ", world"
+end
+
+async function fetchTwoStep(): string
+    local a = await instant("AA")
+    local b = await instant("BB")
+    return a .. b
+end
+
+async function returnsNumber(n: number): number
+    local v = await instant(tostring(n))
+    return tonumber(v)!
+end
+
+export function run(): nil
+    section("async / await")
+
+    -- async functions accept an optional __done callback as last argument
+    local mut got1: string = ""
+    fetchHello(function(r: string): nil got1 = r end)
+    expectEq("async single await", got1, "hello, world")
+
+    local mut got2: string = ""
+    fetchTwoStep(function(r: string): nil got2 = r end)
+    expectEq("async sequential awaits", got2, "AABB")
+
+    local mut got3: number = 0
+    returnsNumber(7, function(r: number): nil got3 = r end)
+    expectEq("async returns number through await", got3, 7)
+end
