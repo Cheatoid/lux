@@ -72,19 +72,19 @@ Detects your OS + architecture, pulls the latest release archive, extracts it, a
 **Linux / macOS (bash / zsh):**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/LuaLux/lux/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/LuaLux/lux/master/scripts/install.sh | bash
 ```
 
 **Linux / macOS (fish &mdash; e.g. CachyOS):**
 
 ```fish
-curl -fsSL https://raw.githubusercontent.com/LuaLux/lux/main/scripts/install.fish | fish
+curl -fsSL https://raw.githubusercontent.com/LuaLux/lux/master/scripts/install.fish | fish
 ```
 
 **Windows (PowerShell 5.1+):**
 
 ```powershell
-irm https://raw.githubusercontent.com/LuaLux/lux/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/LuaLux/lux/master/scripts/install.ps1 | iex
 ```
 
 Open a new shell after the script finishes and `lux version` should resolve. Pin a specific tag with `LUX_VERSION=v0.2.0` (bash / fish) or `$env:LUX_VERSION = "v0.2.0"` (PowerShell) before running the installer.
