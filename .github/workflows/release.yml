@@ -32,9 +32,6 @@ jobs:
           - os: ubuntu-latest
             rid: linux-arm64
             archive: tar
-          - os: macos-13
-            rid: osx-x64
-            archive: tar
           - os: macos-14
             rid: osx-arm64
             archive: tar
@@ -258,7 +255,6 @@ jobs:
             echo "|-----------------|----------------------------------------|"
             echo "| Linux x64       | \`lux-linux-x64.tar.gz\`               |"
             echo "| Linux arm64     | \`lux-linux-arm64.tar.gz\`             |"
-            echo "| macOS x64       | \`lux-osx-x64.tar.gz\`                 |"
             echo "| macOS arm64     | \`lux-osx-arm64.tar.gz\` (Apple Silicon) |"
             echo "| Windows x64     | \`lux-win-x64.zip\`                    |"
             echo "| Windows arm64   | \`lux-win-arm64.zip\`                  |"
