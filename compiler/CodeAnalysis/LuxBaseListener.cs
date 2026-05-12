@@ -102,6 +102,20 @@ public partial class LuxBaseListener : ILuxListener {
 	/// <param name="context">The parse tree.</param>
 	public virtual void ExitFunctionCallStat([NotNull] LuxParser.FunctionCallStatContext context) { }
 	/// <summary>
+	/// Enter a parse tree produced by the <c>NewStat</c>
+	/// labeled alternative in <see cref="LuxParser.stmt"/>.
+	/// <para>The default implementation does nothing.</para>
+	/// </summary>
+	/// <param name="context">The parse tree.</param>
+	public virtual void EnterNewStat([NotNull] LuxParser.NewStatContext context) { }
+	/// <summary>
+	/// Exit a parse tree produced by the <c>NewStat</c>
+	/// labeled alternative in <see cref="LuxParser.stmt"/>.
+	/// <para>The default implementation does nothing.</para>
+	/// </summary>
+	/// <param name="context">The parse tree.</param>
+	public virtual void ExitNewStat([NotNull] LuxParser.NewStatContext context) { }
+	/// <summary>
 	/// Enter a parse tree produced by the <c>IncDecStat_</c>
 	/// labeled alternative in <see cref="LuxParser.stmt"/>.
 	/// <para>The default implementation does nothing.</para>

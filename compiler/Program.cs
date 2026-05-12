@@ -233,20 +233,47 @@ internal static class Program
 
         foreach (var (srcRelPath, destRelPath) in config.Assets)
         {
-            var srcFile = Path.Combine(projectRoot, srcRelPath);
-            var destFile = Path.Combine(outDir, destRelPath);
-            
-            if (!File.Exists(srcFile))
+            var srcPath = Path.Combine(projectRoot, srcRelPath);
+            var destPath = Path.Combine(outDir, destRelPath);
+
+            if (Directory.Exists(srcPath))
+            {
+                CopyDirectoryRecursive(srcPath, destPath);
+                continue;
+            }
+
+            if (!File.Exists(srcPath))
             {
                 await Console.Error.WriteLineAsync($"File not found: {srcRelPath}! Skipping.");
                 continue;
             }
 
-            var parentDir = Path.GetDirectoryName(destFile);
+            var parentDir = Path.GetDirectoryName(destPath);
             if (!string.IsNullOrEmpty(parentDir))
                 Directory.CreateDirectory(parentDir);
-            
-            File.Copy(srcFile, destFile, true);
+
+            File.Copy(srcPath, destPath, true);
+        }
+    }
+
+    /// <summary>
+    /// Mirrors <paramref name="src"/> into <paramref name="dest"/>, creating
+    /// destination directories as needed and overwriting existing files. Used
+    /// by <see cref="CopyAssetsAsync"/> when an asset entry points at a
+    /// directory (e.g. a UI bundle) rather than a single file.
+    /// </summary>
+    private static void CopyDirectoryRecursive(string src, string dest)
+    {
+        Directory.CreateDirectory(dest);
+        foreach (var file in Directory.GetFiles(src))
+        {
+            var name = Path.GetFileName(file);
+            File.Copy(file, Path.Combine(dest, name), true);
+        }
+        foreach (var dir in Directory.GetDirectories(src))
+        {
+            var name = Path.GetFileName(dir);
+            CopyDirectoryRecursive(dir, Path.Combine(dest, name));
         }
     }
 

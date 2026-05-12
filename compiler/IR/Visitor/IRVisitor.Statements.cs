@@ -16,6 +16,15 @@ internal partial class IRVisitor
     public override Node VisitFunctionCallStat(LuxParser.FunctionCallStatContext context)
         => new ExprStmt(NewNodeID, SpanFromCtx(context), (Expr)Visit(context.functionCall()));
 
+    public override Node VisitNewStat(LuxParser.NewStatContext context)
+    {
+        var className = NameRefFromTerm(context.NAME());
+        var args = context.exprList()?.expr().Select(e => (Expr)Visit(e)).ToList() ?? [];
+        var span = SpanFromCtx(context);
+        return new ExprStmt(NewNodeID, span,
+            new NewExpr(NewNodeID, span, className, args));
+    }
+
     public override Node VisitIncDecStat_(LuxParser.IncDecStat_Context context) => Visit(context.incDecStat());
 
     public override Node VisitPostIncStat(LuxParser.PostIncStatContext context)

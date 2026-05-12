@@ -364,6 +364,20 @@ public sealed class ClassType(
     public List<TypeParameterType> TypeParams { get; } = new();
 
     /// <summary>
+    /// All overloads for each method name (instance + static). Insertion-ordered;
+    /// the entry in <see cref="Methods"/>/<see cref="StaticMethods"/> mirrors the
+    /// last-inserted overload (the "primary"). Resolution that needs to consider
+    /// every candidate (per-side dispatch, arity-based overload picking) walks
+    /// this list. The parallel side lists in <see cref="MethodOverloadSides"/> /
+    /// <see cref="StaticMethodOverloadSides"/> carry one <see cref="Side"/> per
+    /// overload at the same index.
+    /// </summary>
+    public Dictionary<string, List<FunctionType>> MethodOverloads { get; } = new();
+    public Dictionary<string, List<Side>> MethodOverloadSides { get; } = new();
+    public Dictionary<string, List<FunctionType>> StaticMethodOverloads { get; } = new();
+    public Dictionary<string, List<Side>> StaticMethodOverloadSides { get; } = new();
+
+    /// <summary>
     /// Per-member side masks. Names that match the corresponding member table
     /// (e.g. <see cref="Methods"/>) carry a <see cref="Side"/>; absence in this
     /// dictionary means the member inherits the wildcard <see cref="Side.All"/>.
@@ -402,6 +416,14 @@ public sealed class InterfaceType(
     public Dictionary<string, StructType.Field> Fields { get; } = new();
     public Dictionary<string, FunctionType> Methods { get; } = new();
     public List<TypeParameterType> TypeParams { get; } = new();
+
+    /// <summary>
+    /// All overloads per method name; the entry in <see cref="Methods"/> mirrors
+    /// the last-inserted overload. See <see cref="ClassType.MethodOverloads"/>
+    /// for the rationale.
+    /// </summary>
+    public Dictionary<string, List<FunctionType>> MethodOverloads { get; } = new();
+    public Dictionary<string, List<Side>> MethodOverloadSides { get; } = new();
 
     /// <summary>Per-member side masks; same convention as <see cref="ClassType"/>.</summary>
     public Dictionary<string, Side> FieldSides { get; } = new();

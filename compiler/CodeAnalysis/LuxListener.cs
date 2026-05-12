@@ -87,6 +87,18 @@ public interface ILuxListener : IParseTreeListener {
 	/// <param name="context">The parse tree.</param>
 	void ExitFunctionCallStat([NotNull] LuxParser.FunctionCallStatContext context);
 	/// <summary>
+	/// Enter a parse tree produced by the <c>NewStat</c>
+	/// labeled alternative in <see cref="LuxParser.stmt"/>.
+	/// </summary>
+	/// <param name="context">The parse tree.</param>
+	void EnterNewStat([NotNull] LuxParser.NewStatContext context);
+	/// <summary>
+	/// Exit a parse tree produced by the <c>NewStat</c>
+	/// labeled alternative in <see cref="LuxParser.stmt"/>.
+	/// </summary>
+	/// <param name="context">The parse tree.</param>
+	void ExitNewStat([NotNull] LuxParser.NewStatContext context);
+	/// <summary>
 	/// Enter a parse tree produced by the <c>IncDecStat_</c>
 	/// labeled alternative in <see cref="LuxParser.stmt"/>.
 	/// </summary>

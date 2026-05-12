@@ -280,6 +280,14 @@ public static class NodeFinder
                     SearchStmtList(arm.Body, line, col, ref best);
                 }
                 break;
+            case DeferStmt ds:
+                if (ds.Call != null) SearchExpr(ds.Call, line, col, ref best);
+                if (ds.Block != null) SearchStmtList(ds.Block, line, col, ref best);
+                break;
+            case GuardStmt gs:
+                SearchExpr(gs.Condition, line, col, ref best);
+                if (gs.ElseExpr != null) SearchExpr(gs.ElseExpr, line, col, ref best);
+                break;
             case ClassDecl cd:
                 if (cd.Constructor != null)
                 {
@@ -516,6 +524,25 @@ public static class NodeFinder
                     CheckNameRef(s.Name, line, col, ref best);
                     CheckNameRef(s.Alias, line, col, ref best);
                 }
+                break;
+            case MatchStmt ms:
+                SearchExprForNameRef(ms.Scrutinee, line, col, ref best);
+                foreach (var arm in ms.Arms)
+                {
+                    if (arm.Pattern.ValueExpr != null) SearchExprForNameRef(arm.Pattern.ValueExpr, line, col, ref best);
+                    if (arm.Pattern.TypeRef != null) SearchTypeRefForNameRef(arm.Pattern.TypeRef, line, col, ref best);
+                    if (arm.Pattern.Binding != null) CheckNameRef(arm.Pattern.Binding, line, col, ref best);
+                    if (arm.Guard != null) SearchExprForNameRef(arm.Guard, line, col, ref best);
+                    SearchStmtListForNameRef(arm.Body, line, col, ref best);
+                }
+                break;
+            case DeferStmt ds:
+                if (ds.Call != null) SearchExprForNameRef(ds.Call, line, col, ref best);
+                if (ds.Block != null) SearchStmtListForNameRef(ds.Block, line, col, ref best);
+                break;
+            case GuardStmt gs:
+                SearchExprForNameRef(gs.Condition, line, col, ref best);
+                if (gs.ElseExpr != null) SearchExprForNameRef(gs.ElseExpr, line, col, ref best);
                 break;
             case ExportStmt exp:
                 SearchStmtForNameRef(exp.Declaration, line, col, ref best);
@@ -888,6 +915,25 @@ public static class NodeFinder
             case ExportStmt exp:
                 CollectFromStmt(exp.Declaration, refs);
                 break;
+            case MatchStmt ms:
+                CollectFromExpr(ms.Scrutinee, refs);
+                foreach (var arm in ms.Arms)
+                {
+                    if (arm.Pattern.ValueExpr != null) CollectFromExpr(arm.Pattern.ValueExpr, refs);
+                    if (arm.Pattern.TypeRef != null) CollectFromTypeRef(arm.Pattern.TypeRef, refs);
+                    if (arm.Pattern.Binding != null) AddRef(arm.Pattern.Binding, refs);
+                    if (arm.Guard != null) CollectFromExpr(arm.Guard, refs);
+                    CollectFromStmtList(arm.Body, refs);
+                }
+                break;
+            case DeferStmt ds:
+                if (ds.Call != null) CollectFromExpr(ds.Call, refs);
+                if (ds.Block != null) CollectFromStmtList(ds.Block, refs);
+                break;
+            case GuardStmt gs:
+                CollectFromExpr(gs.Condition, refs);
+                if (gs.ElseExpr != null) CollectFromExpr(gs.ElseExpr, refs);
+                break;
             case GotoStmt gs:
                 AddRef(gs.LabelName, refs);
                 break;
@@ -1194,6 +1240,23 @@ public static class NodeFinder
                 break;
             case ExportStmt exp:
                 RegisterStmt(exp.Declaration, reg);
+                break;
+            case MatchStmt ms:
+                RegisterExpr(ms.Scrutinee, reg);
+                foreach (var arm in ms.Arms)
+                {
+                    if (arm.Pattern.ValueExpr != null) RegisterExpr(arm.Pattern.ValueExpr, reg);
+                    if (arm.Guard != null) RegisterExpr(arm.Guard, reg);
+                    RegisterStmtList(arm.Body, reg);
+                }
+                break;
+            case DeferStmt ds:
+                if (ds.Call != null) RegisterExpr(ds.Call, reg);
+                if (ds.Block != null) RegisterStmtList(ds.Block, reg);
+                break;
+            case GuardStmt gs:
+                RegisterExpr(gs.Condition, reg);
+                if (gs.ElseExpr != null) RegisterExpr(gs.ElseExpr, reg);
                 break;
             case ClassDecl cd:
                 if (cd.Constructor != null)

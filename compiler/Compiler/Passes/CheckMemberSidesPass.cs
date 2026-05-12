@@ -257,6 +257,7 @@ public sealed class CheckMemberSidesPass()
                 var name = memberName.Name;
                 if (isClassRef && cur.StaticMethods.ContainsKey(name))
                 {
+                    if (AnyOverloadAccessible(cur.StaticMethodOverloadSides, name, fileMask)) return;
                     cur.StaticMethodSides.TryGetValue(name, out var ss);
                     Report(ctx, memberName, fileMask, ss, cur.Name, name);
                     return;
@@ -269,6 +270,7 @@ public sealed class CheckMemberSidesPass()
                 }
                 if (cur.Methods.ContainsKey(name))
                 {
+                    if (AnyOverloadAccessible(cur.MethodOverloadSides, name, fileMask)) return;
                     cur.MethodSides.TryGetValue(name, out var ms);
                     Report(ctx, memberName, fileMask, ms, cur.Name, name);
                     return;
@@ -281,6 +283,7 @@ public sealed class CheckMemberSidesPass()
                 }
                 if (cur.StaticMethods.ContainsKey(name))
                 {
+                    if (AnyOverloadAccessible(cur.StaticMethodOverloadSides, name, fileMask)) return;
                     cur.StaticMethodSides.TryGetValue(name, out var ss2);
                     Report(ctx, memberName, fileMask, ss2, cur.Name, name);
                     return;
@@ -307,6 +310,7 @@ public sealed class CheckMemberSidesPass()
         var name = memberName.Name;
         if (it.Methods.ContainsKey(name))
         {
+            if (AnyOverloadAccessible(it.MethodOverloadSides, name, fileMask)) return true;
             it.MethodSides.TryGetValue(name, out var ms);
             Report(ctx, memberName, fileMask, ms, it.Name, name);
             return true;
@@ -316,6 +320,26 @@ public sealed class CheckMemberSidesPass()
             it.FieldSides.TryGetValue(name, out var fs);
             Report(ctx, memberName, fileMask, fs, it.Name, name);
             return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// True when any overload of <paramref name="name"/> in
+    /// <paramref name="overloadSides"/> is reachable from
+    /// <paramref name="fileMask"/>. An overloaded method with at least one
+    /// side-appropriate variant is OK at the call site — <see cref="InferTypesPass"/>'s
+    /// overload dispatcher will pick that variant and surface a real diagnostic
+    /// (param-count / type mismatch) if no overload actually matches.
+    /// </summary>
+    private static bool AnyOverloadAccessible(Dictionary<string, List<Side>> overloadSides,
+        string name, Side fileMask)
+    {
+        if (!overloadSides.TryGetValue(name, out var sides) || sides.Count <= 1) return false;
+        foreach (var s in sides)
+        {
+            if (s == Side.None || s == Side.All) return true;
+            if (s.IsAccessibleFrom(fileMask)) return true;
         }
         return false;
     }

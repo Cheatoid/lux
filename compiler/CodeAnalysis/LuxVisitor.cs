@@ -65,6 +65,13 @@ public interface ILuxVisitor<Result> : IParseTreeVisitor<Result> {
 	/// <return>The visitor result.</return>
 	Result VisitFunctionCallStat([NotNull] LuxParser.FunctionCallStatContext context);
 	/// <summary>
+	/// Visit a parse tree produced by the <c>NewStat</c>
+	/// labeled alternative in <see cref="LuxParser.stmt"/>.
+	/// </summary>
+	/// <param name="context">The parse tree.</param>
+	/// <return>The visitor result.</return>
+	Result VisitNewStat([NotNull] LuxParser.NewStatContext context);
+	/// <summary>
 	/// Visit a parse tree produced by the <c>IncDecStat_</c>
 	/// labeled alternative in <see cref="LuxParser.stmt"/>.
 	/// </summary>

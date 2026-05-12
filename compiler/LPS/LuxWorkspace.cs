@@ -27,6 +27,24 @@ public sealed class LuxWorkspace
 
     private string? _rootPath;
 
+    /// <summary>
+    /// Cache for <see cref="AnalyzeImportedFile"/> keyed by absolute path.
+    /// Each entry stores the cache stamp (mtime + length for closed files,
+    /// or a content version for currently-open files) so we re-analyze only
+    /// when the file actually changes. Without this, every keystroke in a
+    /// consumer file re-parses every imported file from disk.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, (string Stamp, AnalysisResult Result)> _importCache = new();
+
+    /// <summary>
+    /// Cache for <see cref="ResolveImportPath"/>. Module resolution itself
+    /// can do a recursive directory walk (looking for matching
+    /// <c>declare module</c> headers), which is too expensive to repeat on
+    /// every keystroke. Keyed by <c>importerDir|moduleName</c>; invalidated
+    /// only when the workspace root changes (rare).
+    /// </summary>
+    private readonly ConcurrentDictionary<string, string?> _resolveCache = new();
+
     public void Initialize(string? rootPath)
     {
         _rootPath = rootPath;
@@ -38,20 +56,86 @@ public sealed class LuxWorkspace
         }
     }
 
-    public void SetServer(ILanguageServerFacade server) => _server = server;
+    public void SetServer(ILanguageServerFacade server)
+    {
+        _server = server;
+        // Pre-warm the import cache so the first hover/symbol query in any
+        // workspace file doesn't pay the cold-parse cost. VSCode is supposed
+        // to send didOpen for already-open files once the dynamic
+        // registration completes, but in practice it sometimes drops them —
+        // pre-warming guarantees that GetResult's disk fallback hits a
+        // populated import cache and finishes fast.
+        if (_rootPath != null) Task.Run(() => PreWarmWorkspace(_rootPath));
+    }
 
-    public AnalysisResult? GetResult(string uri) =>
-        _results.TryGetValue(uri, out var r) ? r : null;
+    private void PreWarmWorkspace(string rootPath)
+    {
+        try
+        {
+            var sourceRoot = Path.IsPathRooted(_config.Source)
+                ? _config.Source
+                : Path.Combine(rootPath, _config.Source);
+            if (!Directory.Exists(sourceRoot)) sourceRoot = rootPath;
+
+            string[] files;
+            try { files = Directory.GetFiles(sourceRoot, "*.lux", SearchOption.AllDirectories); }
+            catch { return; }
+
+            foreach (var f in files)
+            {
+                // Skip files that are also under common ignore directories
+                // ("out/", "lux_modules/" generated bits): they're transient
+                // build artefacts and not worth indexing.
+                if (f.Contains("/out/") || f.Contains("/lux_modules/")) continue;
+                try
+                {
+                    var cfg = _config.Clone();
+                    var dir = Path.GetDirectoryName(f);
+                    if (dir != null) cfg.Source = dir;
+                    AnalyzeImportedFile(f, cfg);
+                }
+                catch { /* best-effort warmup */ }
+            }
+        }
+        catch { /* best-effort warmup */ }
+    }
+
+    /// <summary>
+    /// Returns the cached analysis for the given document URI, or — if the
+    /// document was never opened via <c>textDocument/didOpen</c> — falls back
+    /// to reading the file from disk and analyzing it on demand. The fallback
+    /// is necessary because VSCode sometimes drops the <c>didOpen</c>
+    /// notification for files that were already open when the language client
+    /// became ready (the dynamic-capability-registration race): without it,
+    /// every hover/symbol/definition request silently returns null until the
+    /// user types in the file.
+    /// </summary>
+    public AnalysisResult? GetResult(string uri)
+    {
+        if (_results.TryGetValue(uri, out var r)) return r;
+
+        var path = DocumentUri.GetFileSystemPath(DocumentUri.Parse(uri));
+        if (path == null || !File.Exists(path)) return null;
+
+        string text;
+        try { text = File.ReadAllText(path); }
+        catch { return null; }
+
+        AnalyzeDocument(uri, text);
+        return _results.TryGetValue(uri, out r) ? r : null;
+    }
 
     public void OnDocumentOpened(string uri, string text)
     {
         _openDocuments[uri] = text;
+        InvalidateImportCacheFor(uri);
         AnalyzeDocument(uri, text);
     }
 
     public void OnDocumentChanged(string uri, string text)
     {
         _openDocuments[uri] = text;
+        InvalidateImportCacheFor(uri);
         AnalyzeDocument(uri, text);
         ReanalyzeImporters(uri);
     }
@@ -60,11 +144,33 @@ public sealed class LuxWorkspace
     {
         _openDocuments.TryRemove(uri, out _);
         _results.TryRemove(uri, out _);
+        InvalidateImportCacheFor(uri);
         _server?.TextDocument.PublishDiagnostics(new PublishDiagnosticsParams
         {
             Uri = DocumentUri.Parse(uri),
             Diagnostics = new Container<LspDiagnostic>()
         });
+    }
+
+    /// <summary>
+    /// Drops any cached import analysis pointing at <paramref name="uri"/>'s
+    /// path so consumers re-analyze the freshly edited content next time
+    /// they're checked. Required for both open/change/close so we never
+    /// serve stale type info from a previously cached version.
+    /// </summary>
+    private void InvalidateImportCacheFor(string uri)
+    {
+        var path = DocumentUri.GetFileSystemPath(DocumentUri.Parse(uri));
+        if (path == null) return;
+        var full = Path.GetFullPath(path);
+        _importCache.TryRemove(full, out _);
+
+        // Path resolution can reach into recursive directory walks (the
+        // `declare module "X"` lookup), so a newly-created file might make a
+        // previously-unresolved import suddenly resolvable. Cheapest fix:
+        // drop the whole resolve cache whenever a document state changes —
+        // re-resolving on a hot import cache is fast.
+        _resolveCache.Clear();
     }
 
     public void AnalyzeDocument(string uri, string sourceText)
@@ -243,17 +349,36 @@ public sealed class LuxWorkspace
 
     private AnalysisResult? AnalyzeImportedFile(string filePath, Config baseConfig)
     {
-        string source;
-        try { source = File.ReadAllText(filePath); }
-        catch { return null; }
+        var fullPath = Path.GetFullPath(filePath);
 
+        string source;
         var openDoc = _openDocuments.FirstOrDefault(kv =>
         {
             var docPath = DocumentUri.GetFileSystemPath(DocumentUri.Parse(kv.Key));
-            return docPath != null && string.Equals(Path.GetFullPath(docPath), Path.GetFullPath(filePath),
+            return docPath != null && string.Equals(Path.GetFullPath(docPath), fullPath,
                 StringComparison.OrdinalIgnoreCase);
         });
-        if (openDoc.Value != null) source = openDoc.Value;
+
+        string stamp;
+        if (openDoc.Value != null)
+        {
+            source = openDoc.Value;
+            // Open-document hash so cache invalidates as the user types.
+            stamp = "open:" + source.Length + ":" + source.GetHashCode();
+        }
+        else
+        {
+            try
+            {
+                var fi = new FileInfo(filePath);
+                stamp = $"file:{fi.LastWriteTimeUtc.Ticks}:{fi.Length}";
+                source = File.ReadAllText(filePath);
+            }
+            catch { return null; }
+        }
+
+        if (_importCache.TryGetValue(fullPath, out var cached) && cached.Stamp == stamp)
+            return cached.Result;
 
         var diag = new DiagnosticsBag();
         var nodeAlloc = new IDAlloc<NodeID>();
@@ -299,7 +424,7 @@ public sealed class LuxWorkspace
 
         var nodeRegistry = NodeFinder.BuildNodeRegistry(hir);
 
-        return new AnalysisResult
+        var result = new AnalysisResult
         {
             Uri = DocumentUri.FromFileSystemPath(filePath).ToString(),
             FilePath = filePath,
@@ -311,6 +436,9 @@ public sealed class LuxWorkspace
             NodeRegistry = nodeRegistry,
             FileMap = nodeRegistry.ToDictionary(kv => kv.Key, _ => filePath)
         };
+
+        _importCache[fullPath] = (stamp, result);
+        return result;
     }
 
     public record struct ExportInfo(IR.Type Type, IR.SymbolKind SymKind, SymID Sym, Node? DeclNode);
@@ -458,32 +586,174 @@ public sealed class LuxWorkspace
         }
     }
 
-    private static IR.Type ImportType(TypeTable dstTypes, IR.Type srcType, TypeTable? srcTypes)
+    /// <summary>
+    /// Bridges a type from a different <see cref="TypeTable"/> into
+    /// <paramref name="dstTypes"/>. Classes and interfaces need their members
+    /// copied across explicitly; without this, hovering on
+    /// <c>obj:method()</c> where <c>obj</c> comes from an imported class
+    /// reads an empty <see cref="ClassType.Methods"/> and falls through to
+    /// <c>any</c>. The walk is memoised so cyclic class graphs (A.method
+    /// returns B which references A) terminate.
+    /// </summary>
+    private static IR.Type ImportType(TypeTable dstTypes, IR.Type srcType, TypeTable? srcTypes,
+        Dictionary<IR.Type, IR.Type>? memo = null)
     {
-        return srcType switch
+        memo ??= new Dictionary<IR.Type, IR.Type>(ReferenceEqualityComparer.Instance);
+        if (memo.TryGetValue(srcType, out var existing)) return existing;
+
+        switch (srcType)
         {
-            FunctionType ft => dstTypes.DeclareType(new FunctionType(
-                ft.ParamTypes.Select(p => ImportType(dstTypes, p, srcTypes)),
-                ft.ParamNames,
-                ImportType(dstTypes, ft.ReturnType, srcTypes),
-                ft.IsVararg,
-                ft.VarargType != null ? ImportType(dstTypes, ft.VarargType, srcTypes) : null,
-                ft.DefaultParams.Count > 0 ? [..ft.DefaultParams] : null)),
-            UnionType ut => dstTypes.DeclareType(new UnionType(
-                ut.Types.Select(t => ImportType(dstTypes, t, srcTypes)))),
-            TableArrayType ta => dstTypes.DeclareType(new TableArrayType(
-                ImportType(dstTypes, ta.ElementType, srcTypes))),
-            TableMapType tm => dstTypes.DeclareType(new TableMapType(
-                ImportType(dstTypes, tm.KeyType, srcTypes),
-                ImportType(dstTypes, tm.ValueType, srcTypes))),
-            StructType st => dstTypes.DeclareType(new StructType(
-                st.Fields.Select(f => new StructType.Field(f.Name, ImportType(dstTypes, f.Type, srcTypes), f.IsMeta)))),
-            EnumType et => dstTypes.DeclareType(new EnumType(
-                et.Name, et.Members, ImportType(dstTypes, et.BaseType, srcTypes))),
-            ClassType ct => dstTypes.DeclareType(new ClassType(ct.Name, null, [], ct.IsAbstract)),
-            InterfaceType it => dstTypes.DeclareType(new InterfaceType(it.Name, [])),
-            _ => dstTypes.DeclareType(new IR.Type(srcType.Kind))
-        };
+            case FunctionType ft:
+            {
+                var imported = dstTypes.DeclareType(new FunctionType(
+                    ft.ParamTypes.Select(p => ImportType(dstTypes, p, srcTypes, memo)),
+                    ft.ParamNames,
+                    ImportType(dstTypes, ft.ReturnType, srcTypes, memo),
+                    ft.IsVararg,
+                    ft.VarargType != null ? ImportType(dstTypes, ft.VarargType, srcTypes, memo) : null,
+                    ft.DefaultParams.Count > 0 ? [..ft.DefaultParams] : null));
+                memo[srcType] = imported;
+                return imported;
+            }
+            case UnionType ut:
+            {
+                var imported = dstTypes.DeclareType(new UnionType(
+                    ut.Types.Select(t => ImportType(dstTypes, t, srcTypes, memo))));
+                memo[srcType] = imported;
+                return imported;
+            }
+            case TableArrayType ta:
+            {
+                var imported = dstTypes.DeclareType(new TableArrayType(
+                    ImportType(dstTypes, ta.ElementType, srcTypes, memo)));
+                memo[srcType] = imported;
+                return imported;
+            }
+            case TableMapType tm:
+            {
+                var imported = dstTypes.DeclareType(new TableMapType(
+                    ImportType(dstTypes, tm.KeyType, srcTypes, memo),
+                    ImportType(dstTypes, tm.ValueType, srcTypes, memo)));
+                memo[srcType] = imported;
+                return imported;
+            }
+            case StructType st:
+            {
+                var imported = dstTypes.DeclareType(new StructType(
+                    st.Fields.Select(f => new StructType.Field(f.Name, ImportType(dstTypes, f.Type, srcTypes, memo), f.IsMeta))));
+                memo[srcType] = imported;
+                return imported;
+            }
+            case TupleType tt:
+            {
+                var imported = dstTypes.DeclareType(new TupleType(
+                    tt.Fields.Select(f => new TupleType.Field(f.Name, ImportType(dstTypes, f.Type, srcTypes, memo)))));
+                memo[srcType] = imported;
+                return imported;
+            }
+            case EnumType et:
+            {
+                var imported = dstTypes.DeclareType(new EnumType(
+                    et.Name, et.Members, ImportType(dstTypes, et.BaseType, srcTypes, memo)));
+                memo[srcType] = imported;
+                return imported;
+            }
+            case ClassType ct:
+            {
+                // Pre-register the bridge in memo BEFORE recursing into
+                // members so a method whose signature references the same
+                // class doesn't loop and doesn't get a half-built second
+                // copy.
+                var bridge = new ClassType(ct.Name, null, [], ct.IsAbstract);
+                var declared = dstTypes.DeclareType(bridge);
+                memo[srcType] = declared;
+                // Re-fetch in case DeclareType deduplicated to an existing
+                // entry — its Methods dict may already be populated.
+                if (declared is not ClassType target) return declared;
+                if (target.Methods.Count > 0) return declared;
+
+                target.BaseClass = ct.BaseClass != null
+                    ? ImportType(dstTypes, ct.BaseClass, srcTypes, memo) as ClassType
+                    : null;
+                foreach (var iface in ct.Interfaces)
+                {
+                    if (ImportType(dstTypes, iface, srcTypes, memo) is InterfaceType bridged)
+                        target.Interfaces.Add(bridged);
+                }
+                foreach (var (n, f) in ct.InstanceFields)
+                    target.InstanceFields[n] = new StructType.Field(f.Name,
+                        ImportType(dstTypes, f.Type, srcTypes, memo), f.IsMeta);
+                foreach (var (n, m) in ct.Methods)
+                    if (ImportType(dstTypes, m, srcTypes, memo) is FunctionType bm) target.Methods[n] = bm;
+                foreach (var (n, m) in ct.StaticMethods)
+                    if (ImportType(dstTypes, m, srcTypes, memo) is FunctionType bm) target.StaticMethods[n] = bm;
+                foreach (var (n, list) in ct.MethodOverloads)
+                {
+                    var bridgedList = new List<FunctionType>();
+                    foreach (var fn in list)
+                        if (ImportType(dstTypes, fn, srcTypes, memo) is FunctionType bfn) bridgedList.Add(bfn);
+                    target.MethodOverloads[n] = bridgedList;
+                }
+                foreach (var (n, list) in ct.StaticMethodOverloads)
+                {
+                    var bridgedList = new List<FunctionType>();
+                    foreach (var fn in list)
+                        if (ImportType(dstTypes, fn, srcTypes, memo) is FunctionType bfn) bridgedList.Add(bfn);
+                    target.StaticMethodOverloads[n] = bridgedList;
+                }
+                foreach (var (n, list) in ct.MethodOverloadSides) target.MethodOverloadSides[n] = [..list];
+                foreach (var (n, list) in ct.StaticMethodOverloadSides) target.StaticMethodOverloadSides[n] = [..list];
+                foreach (var (n, g) in ct.Getters)
+                    if (ImportType(dstTypes, g, srcTypes, memo) is FunctionType bg) target.Getters[n] = bg;
+                foreach (var (n, s) in ct.Setters)
+                    if (ImportType(dstTypes, s, srcTypes, memo) is FunctionType bs) target.Setters[n] = bs;
+                if (ct.ConstructorType != null)
+                    target.ConstructorType = ImportType(dstTypes, ct.ConstructorType, srcTypes, memo) as FunctionType;
+                foreach (var n in ct.AbstractMethods) target.AbstractMethods.Add(n);
+                foreach (var n in ct.ProtectedMembers) target.ProtectedMembers.Add(n);
+                target.CtorTemplate = ct.CtorTemplate;
+                target.ConstructorSide = ct.ConstructorSide;
+                foreach (var (n, s) in ct.FieldSides) target.FieldSides[n] = s;
+                foreach (var (n, s) in ct.MethodSides) target.MethodSides[n] = s;
+                foreach (var (n, s) in ct.StaticMethodSides) target.StaticMethodSides[n] = s;
+                foreach (var (n, s) in ct.GetterSides) target.GetterSides[n] = s;
+                foreach (var (n, s) in ct.SetterSides) target.SetterSides[n] = s;
+                return declared;
+            }
+            case InterfaceType it:
+            {
+                var bridge = new InterfaceType(it.Name, []);
+                var declared = dstTypes.DeclareType(bridge);
+                memo[srcType] = declared;
+                if (declared is not InterfaceType target) return declared;
+                if (target.Methods.Count > 0) return declared;
+
+                foreach (var b in it.BaseInterfaces)
+                    if (ImportType(dstTypes, b, srcTypes, memo) is InterfaceType bb) target.BaseInterfaces.Add(bb);
+                foreach (var (n, f) in it.Fields)
+                    target.Fields[n] = new StructType.Field(f.Name,
+                        ImportType(dstTypes, f.Type, srcTypes, memo), f.IsMeta);
+                foreach (var (n, m) in it.Methods)
+                    if (ImportType(dstTypes, m, srcTypes, memo) is FunctionType bm) target.Methods[n] = bm;
+                foreach (var (n, list) in it.MethodOverloads)
+                {
+                    var bridgedList = new List<FunctionType>();
+                    foreach (var fn in list)
+                        if (ImportType(dstTypes, fn, srcTypes, memo) is FunctionType bfn) bridgedList.Add(bfn);
+                    target.MethodOverloads[n] = bridgedList;
+                }
+                foreach (var (n, list) in it.MethodOverloadSides) target.MethodOverloadSides[n] = [..list];
+                foreach (var (n, s) in it.FieldSides) target.FieldSides[n] = s;
+                foreach (var (n, s) in it.MethodSides) target.MethodSides[n] = s;
+                return declared;
+            }
+            default:
+            {
+                var imported = dstTypes.DeclareType(new IR.Type(srcType.Kind));
+                memo[srcType] = imported;
+                return imported;
+            }
+        }
     }
 
     private void PublishDiagnostics(string uri, string filePath, DiagnosticsBag bag)
@@ -982,9 +1252,19 @@ public sealed class LuxWorkspace
     /// </summary>
     private string? ResolveImportPath(string moduleName, string importerPath)
     {
-        var searchDirs = new List<string>();
-
         var importerDir = Path.GetDirectoryName(Path.GetFullPath(importerPath));
+        var cacheKey = $"{importerDir}|{moduleName}";
+        if (_resolveCache.TryGetValue(cacheKey, out var cachedPath))
+            return cachedPath;
+
+        var resolved = ResolveImportPathUncached(moduleName, importerDir);
+        _resolveCache[cacheKey] = resolved;
+        return resolved;
+    }
+
+    private string? ResolveImportPathUncached(string moduleName, string? importerDir)
+    {
+        var searchDirs = new List<string>();
         if (importerDir != null) searchDirs.Add(importerDir);
 
         if (_rootPath != null)

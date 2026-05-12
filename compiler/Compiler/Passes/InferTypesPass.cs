@@ -64,9 +64,18 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
             }
         }
 
-        // Phase 2: normal per-file walk. Class/interface decls hit the
-        // re-entry guard and short-circuit, so bodies are not re-checked.
-        foreach (var pkg in context.Pkgs)
+        // Phase 2: full per-file walk, ordered so importers run AFTER their
+        // import targets. ResolveImports/ResolveTypeRefs propagate source-side
+        // symbol types onto import bindings, but functions (and other
+        // value-level decls) only have their types computed here in Phase 2.
+        // Without topo order, a consumer file might be checked while the
+        // target file's exported function symbol is still untyped — then a
+        // call like `local a, b, c = util.foo()` sees a callee of type `any`
+        // and `a` gets `any` instead of `string`. Re-propagating import types
+        // after each pkg finishes pushes the freshly inferred types onto
+        // every importer.
+        var ordered = TopoSortPackages(context);
+        foreach (var pkg in ordered)
         {
             foreach (var file in pkg.Files)
             {
@@ -75,9 +84,66 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
                 ResolveStmts(fileCtx, file.Hir.Body);
                 if (file.Hir.Return != null) ResolveStmt(fileCtx, file.Hir.Return);
             }
+
+            foreach (var importerPkg in context.Pkgs)
+                foreach (var importerFile in importerPkg.Files)
+                    ResolveImportsPass.PropagateImportTypes(context, importerPkg, importerFile);
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Orders packages so that an importer always follows its targets. Uses
+    /// the <c>import_resolved:&lt;file&gt;:&lt;module&gt;</c> cache entries
+    /// laid down by <see cref="ResolveImportsPass"/> to discover edges. Cycles
+    /// are tolerated (the offending package is emitted at its discovery
+    /// point); the cost of a wrong order inside a cycle is at worst the same
+    /// "untyped callee" problem we had before, so this is no regression.
+    /// </summary>
+    private static List<PackageContext> TopoSortPackages(PassContext context)
+    {
+        var fileToPkg = new Dictionary<PreparsedFile, PackageContext>();
+        foreach (var pkg in context.Pkgs)
+            foreach (var file in pkg.Files)
+                fileToPkg[file] = pkg;
+
+        var deps = new Dictionary<PackageContext, HashSet<PackageContext>>();
+        foreach (var pkg in context.Pkgs) deps[pkg] = [];
+
+        foreach (var pkg in context.Pkgs)
+        {
+            foreach (var file in pkg.Files)
+            {
+                foreach (var stmt in file.Hir.Body)
+                {
+                    if (stmt is not ImportStmt import) continue;
+                    var key = $"import_resolved:{file.Filename}:{import.Module.Name}";
+                    if (!context.Cache.TryGetValue(key, out var obj) || obj is not ResolvedModule resolved) continue;
+                    if (resolved.File == null) continue;
+                    if (!fileToPkg.TryGetValue(resolved.File, out var depPkg)) continue;
+                    if (depPkg == pkg) continue;
+                    deps[pkg].Add(depPkg);
+                }
+            }
+        }
+
+        var ordered = new List<PackageContext>();
+        var visited = new HashSet<PackageContext>();
+        var onStack = new HashSet<PackageContext>();
+
+        foreach (var pkg in context.Pkgs) Visit(pkg);
+        return ordered;
+
+        void Visit(PackageContext pkg)
+        {
+            if (visited.Contains(pkg)) return;
+            if (!onStack.Add(pkg)) return;
+            foreach (var dep in deps[pkg]) Visit(dep);
+            onStack.Remove(pkg);
+            visited.Add(pkg);
+            ordered.Add(pkg);
+        }
     }
 
     private static PassContext MakeFileContext(PassContext parent, PackageContext pkg, PreparsedFile file)
@@ -464,10 +530,15 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
             var retType = method.ReturnType != null && method.ReturnType.ResolvedType != TypID.Invalid
                 ? GetType(pc, method.ReturnType.ResolvedType) : pc.Types.PrimNil;
             var funcTypId = pc.Types.FuncOf(methodParams, retType, isVararg, varargType, defaultIndices.Count > 0 ? defaultIndices : null, method.IsAsync);
+            var ft = (FunctionType)GetType(pc, funcTypId);
+            var methodSide = Lux.Compiler.Annotations.BuiltinAnnotations.ExtractSide(method.Annotations,
+                (ann, badName) => ReportBadSide(pc, ann, badName));
             if (method.IsStatic)
-                classType.StaticMethods[method.Name.Name] = (FunctionType)GetType(pc, funcTypId);
+                AppendOverload(classType.StaticMethods, classType.StaticMethodOverloads,
+                    classType.StaticMethodOverloadSides, method.Name.Name, ft, methodSide);
             else
-                classType.Methods[method.Name.Name] = (FunctionType)GetType(pc, funcTypId);
+                AppendOverload(classType.Methods, classType.MethodOverloads,
+                    classType.MethodOverloadSides, method.Name.Name, ft, methodSide);
             StampMemberSide(pc, method.Annotations,
                 method.IsStatic ? classType.StaticMethodSides : classType.MethodSides,
                 method.Name.Name);
@@ -653,10 +724,43 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
             }
             var retType = method.ReturnType != null && method.ReturnType.ResolvedType != TypID.Invalid
                 ? GetType(pc, method.ReturnType.ResolvedType) : pc.Types.PrimNil;
-            ifaceType.Methods[method.Name.Name] = (FunctionType)GetType(pc,
+            var ifaceFt = (FunctionType)GetType(pc,
                 pc.Types.FuncOf(methodParams, retType, ifaceIsVararg, ifaceVarargType, isAsync: method.IsAsync));
+            var methodSide = Lux.Compiler.Annotations.BuiltinAnnotations.ExtractSide(method.Annotations,
+                (ann, badName) => ReportBadSide(pc, ann, badName));
+            AppendOverload(ifaceType.Methods, ifaceType.MethodOverloads,
+                ifaceType.MethodOverloadSides, method.Name.Name, ifaceFt, methodSide);
             StampMemberSide(pc, method.Annotations, ifaceType.MethodSides, method.Name.Name);
         }
+    }
+
+    /// <summary>
+    /// Records an overload for a class/interface method. <paramref name="primary"/>
+    /// stays "last write wins" (so existing code paths that look up the single
+    /// method type by name continue to work for the common no-overload case);
+    /// <paramref name="overloads"/> accumulates every declared variant, with
+    /// <paramref name="overloadSides"/> tracking each variant's side. Resolution
+    /// uses the overload list when the call site has multiple candidates with
+    /// the same name.
+    /// </summary>
+    private static void AppendOverload(Dictionary<string, FunctionType> primary,
+        Dictionary<string, List<FunctionType>> overloads,
+        Dictionary<string, List<Side>> overloadSides,
+        string name, FunctionType ft, Side side)
+    {
+        primary[name] = ft;
+        if (!overloads.TryGetValue(name, out var list))
+        {
+            list = [];
+            overloads[name] = list;
+        }
+        list.Add(ft);
+        if (!overloadSides.TryGetValue(name, out var sides))
+        {
+            sides = [];
+            overloadSides[name] = sides;
+        }
+        sides.Add(side);
     }
 
     private static void StampMemberSide(PassContext pc, List<Annotation> annotations, Dictionary<string, Side> sides, string memberName)
@@ -786,6 +890,8 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
             valueTypes.Add(SynthesizeExpr(pc, value));
         }
 
+        valueTypes = ExpandTrailingTuple(pc, ld.Values, valueTypes, ld.Variables.Count);
+
         for (var i = 0; i < ld.Variables.Count; i++)
         {
             var variable = ld.Variables[i];
@@ -823,6 +929,8 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
             valueTypes.Add(SynthesizeExpr(pc, value));
         }
 
+        valueTypes = ExpandTrailingTuple(pc, stmt.Values, valueTypes, stmt.Targets.Count);
+
         for (var i = 0; i < stmt.Targets.Count; i++)
         {
             var target = stmt.Targets[i];
@@ -836,6 +944,42 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// Lua-style multi-assignment unpacks the LAST expression's multi-returns
+    /// across any extra LHS slots. A function returning <c>(string, number,
+    /// boolean)</c> consumed by <c>local a, b, c = f()</c> binds each element
+    /// to one LHS instead of putting the whole tuple in <c>a</c>. Only the
+    /// trailing expression is expanded — earlier ones are always single-value
+    /// in Lua semantics. No-op when LHS doesn't exceed RHS or the trailing
+    /// type isn't a tuple.
+    /// </summary>
+    private List<TypID> ExpandTrailingTuple(PassContext pc, List<Expr> values, List<TypID> valueTypes, int targetCount)
+    {
+        if (valueTypes.Count == 0 || valueTypes.Count >= targetCount) return valueTypes;
+        if (!IsMultiReturnExpr(values[^1])) return valueTypes;
+
+        var lastTyp = valueTypes[^1];
+        if (!pc.Pkg!.Types.GetByID(lastTyp, out var t) || t is not TupleType tuple) return valueTypes;
+
+        var expanded = new List<TypID>(valueTypes.Take(valueTypes.Count - 1));
+        foreach (var f in tuple.Fields)
+        {
+            expanded.Add(f.Type.ID);
+        }
+
+        return expanded;
+    }
+
+    /// <summary>
+    /// Calls and varargs are the only expressions that Lua allows to spread
+    /// into multiple values at the end of an assignment list. Everything else
+    /// — parenthesised expressions included — collapses to a single value.
+    /// </summary>
+    private static bool IsMultiReturnExpr(Expr e)
+    {
+        return e is FunctionCallExpr or MethodCallExpr or VarargExpr;
     }
 
     private Type ResolveParamType(PassContext pc, Parameter param)
@@ -1599,6 +1743,36 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
             argTypes.Add(SynthesizeExpr(pc, arg));
         }
 
+        // Interface/class method-overload dispatch on dot-access callees.
+        // `Events.CallRemote(...)` with `@side(client) CallRemote(name, ...)`
+        // and `@side(server) CallRemote(name, player, ...)` must dispatch to
+        // the side-appropriate overload at the call site instead of always
+        // picking whichever was inserted last in the method table.
+        if (call.Callee is DotAccessExpr dotForOverload
+            && pc.Pkg!.Types.GetByID(SynthesizeExpr(pc, dotForOverload.Object), out var receiverTyp))
+        {
+            var fname = dotForOverload.FieldName.Name;
+            var isClassRef = dotForOverload.Object is NameExpr cre
+                && pc.Pkg!.Syms.GetByID(cre.Name.Sym, out var cSym)
+                && cSym.Kind == SymbolKind.Class;
+            var (ovFns, ovSides) = CollectMethodOverloads(receiverTyp, fname, staticOnly: isClassRef);
+            if (ovFns.Count > 1)
+            {
+                // Dot-access calls don't prepend `self`; ScoreOverload should
+                // compare argTypes against the function's non-self params.
+                // For class instance methods we'd normally need self, but a
+                // dot-access call on an INSTANCE is rejected earlier; only
+                // class-ref-static or interface methods reach here.
+                var picked = PickOverload(pc, ovFns, ovSides, argTypes, prefixSelf: false);
+                if (picked != null)
+                {
+                    CheckCallArguments(pc, call.Span, picked, argTypes);
+                    var ret = picked.ReturnType.ID;
+                    return call.IsOptional ? MakeNullable(pc, ret) : ret;
+                }
+            }
+        }
+
         if (call.Callee is NameExpr ne && ne.Name.Overloads is { Count: > 1 } overloads)
         {
             var resolved = ResolveOverload(pc, call.Span, overloads, argTypes);
@@ -1737,6 +1911,26 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
             return pc.Types.PrimAny.ID;
         }
 
+        // Overload dispatch for `receiver:method(...)`. The args here are the
+        // explicit args at the call site — `self` is implicit, so for class
+        // instance methods we have to account for it when scoring (the stored
+        // FunctionType includes `self` as its first param).
+        var (mcFns, mcSides) = CollectMethodOverloads(objType, mc.MethodName.Name, staticOnly: false);
+        if (mcFns.Count > 1)
+        {
+            var picked = PickOverload(pc, mcFns, mcSides, argTypes,
+                prefixSelf: objType is ClassType);
+            if (picked != null)
+            {
+                var pickedArgs = objType is ClassType
+                    ? new List<TypID>(argTypes.Count + 1) { objTyp }
+                    : new List<TypID>(argTypes.Count);
+                pickedArgs.AddRange(argTypes);
+                CheckCallArguments(pc, mc.Span, picked, pickedArgs);
+                return picked.ReturnType.ID;
+            }
+        }
+
         var methodFn = ResolveMethodOnType(objType, mc.MethodName.Name);
         if (methodFn == null)
         {
@@ -1788,6 +1982,101 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
             return field?.Type as FunctionType;
         }
         return null;
+    }
+
+    /// <summary>
+    /// Gathers every declared overload of <paramref name="methodName"/> on
+    /// <paramref name="baseType"/>, with each overload's <see cref="Side"/>
+    /// annotation in parallel. Walks the class/interface inheritance chain so
+    /// inherited overloads are part of the candidate set. Empty list means the
+    /// caller should fall back to the single-method <see cref="ResolveMethodOnType"/>
+    /// path (which already handles the no-overload majority case).
+    /// </summary>
+    private static (List<FunctionType> Fns, List<Side> Sides) CollectMethodOverloads(
+        Type baseType, string methodName, bool staticOnly)
+    {
+        var fns = new List<FunctionType>();
+        var sides = new List<Side>();
+
+        if (baseType is ClassType ct)
+        {
+            for (var cur = ct; cur != null; cur = cur.BaseClass)
+            {
+                var ovBag = staticOnly ? cur.StaticMethodOverloads : cur.MethodOverloads;
+                var ovSides = staticOnly ? cur.StaticMethodOverloadSides : cur.MethodOverloadSides;
+                if (ovBag.TryGetValue(methodName, out var list))
+                {
+                    fns.AddRange(list);
+                    if (ovSides.TryGetValue(methodName, out var s)) sides.AddRange(s);
+                    else sides.AddRange(Enumerable.Repeat(Side.All, list.Count));
+                }
+            }
+        }
+        else if (baseType is InterfaceType ift && !staticOnly)
+        {
+            void Walk(InterfaceType i, HashSet<InterfaceType> visited)
+            {
+                if (!visited.Add(i)) return;
+                if (i.MethodOverloads.TryGetValue(methodName, out var list))
+                {
+                    fns.AddRange(list);
+                    if (i.MethodOverloadSides.TryGetValue(methodName, out var s)) sides.AddRange(s);
+                    else sides.AddRange(Enumerable.Repeat(Side.All, list.Count));
+                }
+                foreach (var b in i.BaseInterfaces) Walk(b, visited);
+            }
+            Walk(ift, []);
+        }
+
+        return (fns, sides);
+    }
+
+    /// <summary>
+    /// Picks the best matching overload from a candidate set, filtering by
+    /// side first (overloads not reachable from the file's side mask are
+    /// dropped) and then scoring remaining candidates against the actual
+    /// argument types. Returns null when no candidate fits — the caller
+    /// should then fall back to the primary <see cref="ResolveMethodOnType"/>
+    /// result so existing diagnostics still fire.
+    /// </summary>
+    private FunctionType? PickOverload(PassContext pc, List<FunctionType> fns,
+        List<Side> sides, List<TypID> argTypes, bool prefixSelf)
+    {
+        if (fns.Count == 0) return null;
+        var fileMask = ResolveFileSideMask(pc);
+
+        FunctionType? best = null;
+        var bestScore = -1;
+
+        for (var i = 0; i < fns.Count; i++)
+        {
+            var fn = fns[i];
+            var side = i < sides.Count ? sides[i] : Side.All;
+            // A symbol with side X is reachable from a file with mask F when
+            // every bit of X is in F (see SideExtensions.IsAccessibleFrom).
+            if (!side.IsAccessibleFrom(fileMask)) continue;
+
+            // Method overloads include the synthetic `self` parameter for
+            // instance methods on classes (added in ResolveClassDecl). At a
+            // dot-access call site we haven't prepended self; account for
+            // that by trimming the param list for scoring.
+            var effective = prefixSelf
+                ? new List<TypID>(argTypes.Count + 1) { fn.ParamTypes.Count > 0 ? fn.ParamTypes[0].ID : pc.Types.PrimAny.ID }
+                : new List<TypID>(argTypes.Count);
+            effective.AddRange(argTypes);
+
+            var score = ScoreOverload(pc, fn, effective);
+            if (score > bestScore) { bestScore = score; best = fn; }
+        }
+
+        return bestScore >= 0 ? best : null;
+    }
+
+    private Side ResolveFileSideMask(PassContext pc)
+    {
+        if (pc.File == null || pc.Config.Sides.Count == 0) return Side.All;
+        return SidesResolver.ResolveFileSide(pc.Config.Sides,
+            pc.File.Filename ?? "", Environment.CurrentDirectory);
     }
 
     private TypID InferTableConstructor(PassContext pc, TableConstructorExpr tc)
