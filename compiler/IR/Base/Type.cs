@@ -1,4 +1,5 @@
 ﻿using System.ComponentModel;
+using Lux.Configuration;
 
 namespace Lux.IR;
 
@@ -331,6 +332,18 @@ public sealed class ClassType(
     public HashSet<string> ProtectedMembers { get; } = new();
     public List<TypeParameterType> TypeParams { get; } = new();
 
+    /// <summary>
+    /// Per-member side masks. Names that match the corresponding member table
+    /// (e.g. <see cref="Methods"/>) carry a <see cref="Side"/>; absence in this
+    /// dictionary means the member inherits the wildcard <see cref="Side.All"/>.
+    /// </summary>
+    public Dictionary<string, Side> FieldSides { get; } = new();
+    public Dictionary<string, Side> MethodSides { get; } = new();
+    public Dictionary<string, Side> StaticMethodSides { get; } = new();
+    public Dictionary<string, Side> GetterSides { get; } = new();
+    public Dictionary<string, Side> SetterSides { get; } = new();
+    public Side ConstructorSide { get; set; } = Side.All;
+
     protected override TypeKey GenerateNewKey()
     {
         return $"class<{Name}>";
@@ -347,6 +360,10 @@ public sealed class InterfaceType(
     public Dictionary<string, StructType.Field> Fields { get; } = new();
     public Dictionary<string, FunctionType> Methods { get; } = new();
     public List<TypeParameterType> TypeParams { get; } = new();
+
+    /// <summary>Per-member side masks; same convention as <see cref="ClassType"/>.</summary>
+    public Dictionary<string, Side> FieldSides { get; } = new();
+    public Dictionary<string, Side> MethodSides { get; } = new();
 
     protected override TypeKey GenerateNewKey()
     {

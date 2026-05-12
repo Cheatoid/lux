@@ -25,30 +25,39 @@ are reachable from any file (so existing code keeps working).
 
 ## Annotating declarations
 
-`@side` works on top-level decls — classes, interfaces, functions, variables,
-modules, enums — both regular and `declare` forms.
+`@side` works on top-level decls **and** on individual class / interface
+members — methods, fields, constructors, getters/setters, operators. Both
+regular and `declare` forms are supported.
 
 ```lux
-@side(server)
 declare class Player
     Name: string
-    function Kick(reason: string): nil
+
+    @side(server) function Kick(reason: string): nil
+    @side(server) function Ban(reason: string): nil
+
+    @side(client) function ShowToast(msg: string): nil
+
+    @side(shared) function GetID(): number
+
+    -- Unannotated members default to "any" — reachable from every file.
+    function GetName(): string
 end
 
 @side(client)
 declare class Camera
-    function SetFov(fov: number): nil
-end
-
-@side(shared)
-declare class Vector
-    x: number
-    y: number
+    @side(client) function SetFov(fov: number): nil
 end
 
 @side(server) declare function BroadcastChat(msg: string): nil
 @side(client) declare function ShowToast(msg: string): nil
 ```
+
+The `Player` example above shows the typical pattern: the class **type** is
+reachable from any side (the user can hold a `Player` reference everywhere),
+but individual methods carry their own side mask. A `client` file that calls
+`player:Kick(...)` gets a compile error; calling `player:ShowToast(...)`
+works.
 
 You can list multiple sides if a symbol is genuinely available on more than
 one (`@side(client, server)`). Writing `@side(client, server, shared)` is the
@@ -79,29 +88,42 @@ incrementally: start with one folder under `[sides]`, expand from there.
 
 ## What gets checked
 
-The check runs as a dedicated `CheckSides` pass right after type-ref
-resolution (and before type inference, so the better errors come first). For
-each resolved name reference in the file's body — variable uses, function
-calls, type annotations, `new T(...)`, `instanceof`, `extends`/`implements`
-clauses — the compiler looks up the symbol's `@side` mask and validates it
-against the file's accepted mask.
+Two compiler passes split the work:
+
+1. **`CheckSides`** runs right after type-ref resolution. It walks every
+   resolved top-level `NameRef` in the file's body — variable uses, function
+   calls, type annotations, `new T(...)`, `instanceof`, `extends` /
+   `implements` clauses — and validates the symbol's `@side` mask against the
+   file's accepted mask.
+2. **`CheckMemberSides`** runs after type inference (when receiver types are
+   known) and walks every `DotAccessExpr` / `MethodCallExpr` / `NewExpr`. It
+   resolves the receiver's class or interface type, locates the member, and
+   checks the member's `@side`. Member side annotations inherit through the
+   base class / interface chain — annotating a method on the base class
+   covers all child classes that don't shadow it.
 
 When a mismatch is found:
 
 ```
 Semantic#ErrSymbolWrongSide:
-Symbol 'BroadcastChat' is server-side only and cannot be used in
+Symbol 'Player.Kick' is server-side only and cannot be used in
 this client+shared-side file
 ```
 
-The error stays a normal compile error, so your editor underlines the
-offending reference and your CI fails the build.
+Errors stay normal compile errors, so your editor underlines the offending
+reference and your CI fails the build.
 
 ## Notes & limits
 
-- Sides are checked on **whole declarations** for now — you cannot put
-  `@side(server)` on a single class method or interface field. If you need
-  finer granularity, split the class.
+- `@side` works on whole declarations **and** on individual class /
+  interface members (methods, fields, constructors, getters/setters,
+  operators). A class type without `@side` on the type itself but with
+  `@side` on its methods is the typical pattern for shared types with
+  side-scoped behaviour.
+- A child class that re-declares a parent member without an explicit
+  `@side` is treated as **unrestricted** — the override intentionally
+  drops the parent's restriction. Annotate the override too if you want
+  the same scoping.
 - `@side` is a **builtin compiler annotation** — it does not go through the
   user-script annotation pipeline, so you cannot redefine or rewrite it from
   a `.lux` annotation file.

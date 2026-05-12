@@ -409,6 +409,7 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
                 classType.InstanceFields[field.Name.Name] = new StructType.Field(field.Name, fieldType);
             if (field.IsProtected)
                 classType.ProtectedMembers.Add(field.Name.Name);
+            StampMemberSide(pc, field.Annotations, classType.FieldSides, field.Name.Name);
         }
 
         if (cd.Constructor != null)
@@ -421,6 +422,9 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
                 ctorParams.Add(new Tuple<string, Type>(p.Name.Name, t));
             }
             classType.ConstructorType = (FunctionType)GetType(pc, pc.Types.FuncOf(ctorParams, classType));
+            var ctorSide = Lux.Compiler.Annotations.BuiltinAnnotations.ExtractSide(cd.Constructor.Annotations,
+                (ann, badName) => ReportBadSide(pc, ann, badName));
+            classType.ConstructorSide = ctorSide;
 
             ResolveStmts(pc, cd.Constructor.Body);
             if (cd.Constructor.ReturnStmt != null) ResolveStmt(pc, cd.Constructor.ReturnStmt);
@@ -460,6 +464,9 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
                 classType.StaticMethods[method.Name.Name] = (FunctionType)GetType(pc, funcTypId);
             else
                 classType.Methods[method.Name.Name] = (FunctionType)GetType(pc, funcTypId);
+            StampMemberSide(pc, method.Annotations,
+                method.IsStatic ? classType.StaticMethodSides : classType.MethodSides,
+                method.Name.Name);
 
             if (method.IsAbstract)
                 classType.AbstractMethods.Add(method.Name.Name);
@@ -507,6 +514,9 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
                 classType.Getters[accessor.Name.Name] = accFuncTyp;
             else
                 classType.Setters[accessor.Name.Name] = accFuncTyp;
+            StampMemberSide(pc, accessor.Annotations,
+                accessor.Kind == AccessorKind.Getter ? classType.GetterSides : classType.SetterSides,
+                accessor.Name.Name);
 
             if (accessor.IsOverride && classType.BaseClass != null)
             {
@@ -615,6 +625,7 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
             var fType = field.TypeAnnotation.ResolvedType != TypID.Invalid
                 ? GetType(pc, field.TypeAnnotation.ResolvedType) : pc.Types.PrimAny;
             ifaceType.Fields[field.Name.Name] = new StructType.Field(field.Name, fType);
+            StampMemberSide(pc, field.Annotations, ifaceType.FieldSides, field.Name.Name);
         }
 
         foreach (var method in id.Methods)
@@ -639,7 +650,22 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
                 ? GetType(pc, method.ReturnType.ResolvedType) : pc.Types.PrimNil;
             ifaceType.Methods[method.Name.Name] = (FunctionType)GetType(pc,
                 pc.Types.FuncOf(methodParams, retType, ifaceIsVararg, ifaceVarargType, isAsync: method.IsAsync));
+            StampMemberSide(pc, method.Annotations, ifaceType.MethodSides, method.Name.Name);
         }
+    }
+
+    private static void StampMemberSide(PassContext pc, List<Annotation> annotations, Dictionary<string, Side> sides, string memberName)
+    {
+        if (annotations == null || annotations.Count == 0) return;
+        var side = Lux.Compiler.Annotations.BuiltinAnnotations.ExtractSide(annotations,
+            (ann, badName) => ReportBadSide(pc, ann, badName));
+        if (side != Side.All) sides[memberName] = side;
+    }
+
+    private static void ReportBadSide(PassContext pc, Annotation ann, string badName)
+    {
+        if (!string.IsNullOrEmpty(badName))
+            pc.Diag.Report(ann.Span, Diagnostics.DiagnosticCode.ErrUnknownSideName, badName);
     }
 
     private void ResolveFunctionLike(PassContext pc, List<Parameter> parameters, TypeRef? returnTypeRef,

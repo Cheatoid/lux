@@ -421,11 +421,11 @@ declareBody
     ;
 
 declareClassMember
-    : (LOCAL | PROTECTED)? STATIC? NAME typeAnnotation?                              # DeclareClassFieldMember
-    | (LOCAL | PROTECTED)? STATIC? OVERRIDE? ABSTRACT? ASYNC? FUNCTION NAME funcSignature  # DeclareClassMethodMember
-    | CONSTRUCTOR funcSignature                                                       # DeclareClassConstructorMember
-    | OPERATOR operatorSymbol funcSignature                                           # DeclareClassOperatorMember
-    | NAME NAME funcSignature                                                         # DeclareClassAccessorMember
+    : annotationList (LOCAL | PROTECTED)? STATIC? NAME typeAnnotation?                              # DeclareClassFieldMember
+    | annotationList (LOCAL | PROTECTED)? STATIC? OVERRIDE? ABSTRACT? ASYNC? FUNCTION NAME funcSignature  # DeclareClassMethodMember
+    | annotationList CONSTRUCTOR funcSignature                                                       # DeclareClassConstructorMember
+    | annotationList OPERATOR operatorSymbol funcSignature                                           # DeclareClassOperatorMember
+    | annotationList NAME NAME funcSignature                                                         # DeclareClassAccessorMember
     ;
 
 // Function signature: params + optional return type. No body.

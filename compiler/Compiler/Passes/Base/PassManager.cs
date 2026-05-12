@@ -24,6 +24,7 @@ public sealed class PassManager
         CheckSidesPass.PassName,
         CheckImmutabilityPass.PassName,
         InferTypesPass.PassName,
+        CheckMemberSidesPass.PassName,
         ValidateGenericConstraintsPass.PassName,
         DetectUnusedPass.PassName,
         DeclGenPass.PassName,
@@ -46,6 +47,7 @@ public sealed class PassManager
         CheckSidesPass.PassName,
         CheckImmutabilityPass.PassName,
         InferTypesPass.PassName,
+        CheckMemberSidesPass.PassName,
         ValidateGenericConstraintsPass.PassName,
         DetectUnusedPass.PassName
     ];
@@ -58,6 +60,7 @@ public sealed class PassManager
         CheckSidesPass.PassName,
         CheckImmutabilityPass.PassName,
         InferTypesPass.PassName,
+        CheckMemberSidesPass.PassName,
         ValidateGenericConstraintsPass.PassName,
         DetectUnusedPass.PassName
     ];
@@ -73,6 +76,7 @@ public sealed class PassManager
         CheckSidesPass.PassName,
         CheckImmutabilityPass.PassName,
         InferTypesPass.PassName,
+        CheckMemberSidesPass.PassName,
         ValidateGenericConstraintsPass.PassName,
         DetectUnusedPass.PassName
     ];
@@ -107,6 +111,7 @@ public sealed class PassManager
         Register(new CheckSidesPass());
         Register(new CheckImmutabilityPass());
         Register(new InferTypesPass());
+        Register(new CheckMemberSidesPass());
         Register(new ValidateGenericConstraintsPass());
         Register(new DetectUnusedPass());
         Register(new DeclGenPass());

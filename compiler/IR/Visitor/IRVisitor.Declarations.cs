@@ -208,7 +208,9 @@ internal partial class IRVisitor
                     TypeRef? typeAnn = field.typeAnnotation() != null
                         ? (TypeRef)Visit(field.typeAnnotation().typeExpr())
                         : null;
-                    fields.Add(new ClassFieldNode(fieldName, typeAnn, null, isLocal, isStatic, isProtected, SpanFromCtx(field)));
+                    var fnode = new ClassFieldNode(fieldName, typeAnn, null, isLocal, isStatic, isProtected, SpanFromCtx(field));
+                    fnode.Annotations = VisitAnnotationListContent(field.annotationList());
+                    fields.Add(fnode);
                     break;
                 }
                 case LuxParser.DeclareClassMethodMemberContext method:
@@ -224,6 +226,7 @@ internal partial class IRVisitor
                     var methodTypeParams = VisitTypeParamListContent(method.funcSignature().typeParamList());
                     var cmNode = new ClassMethodNode(methodName, parameters, returnType, [], null, isLocal, isStatic, isAsync, isProtected, isOverride, isAbstract, SpanFromCtx(method));
                     cmNode.TypeParams = methodTypeParams;
+                    cmNode.Annotations = VisitAnnotationListContent(method.annotationList());
                     methods.Add(cmNode);
                     break;
                 }
@@ -231,6 +234,7 @@ internal partial class IRVisitor
                 {
                     var (parameters, _) = VisitFuncSignatureContent(ctor.funcSignature());
                     constructor = new ClassConstructorNode(parameters, [], null, SpanFromCtx(ctor));
+                    constructor.Annotations = VisitAnnotationListContent(ctor.annotationList());
                     break;
                 }
                 case LuxParser.DeclareClassOperatorMemberContext opMember:
@@ -249,6 +253,7 @@ internal partial class IRVisitor
                         isLocal: false, isStatic: false, isAsync: false,
                         isProtected: false, isOverride: false, isAbstract: false,
                         SpanFromCtx(opMember), isOperator: true, operatorSymbol: symText);
+                    opMethodNode.Annotations = VisitAnnotationListContent(opMember.annotationList());
                     methods.Add(opMethodNode);
                     break;
                 }
@@ -258,7 +263,9 @@ internal partial class IRVisitor
                     var propName = NameRefFromTerm(accessor.NAME(1));
                     var kind = kindName == "get" ? AccessorKind.Getter : AccessorKind.Setter;
                     var (parameters, returnType) = VisitFuncSignatureContent(accessor.funcSignature());
-                    accessors.Add(new ClassAccessorNode(kind, propName, parameters, returnType, [], null, false, SpanFromCtx(accessor)));
+                    var anode = new ClassAccessorNode(kind, propName, parameters, returnType, [], null, false, SpanFromCtx(accessor));
+                    anode.Annotations = VisitAnnotationListContent(accessor.annotationList());
+                    accessors.Add(anode);
                     break;
                 }
             }
@@ -302,7 +309,9 @@ internal partial class IRVisitor
                 {
                     var fieldName = NameRefFromTerm(field.NAME());
                     var typeAnn = (TypeRef)Visit(field.typeAnnotation().typeExpr());
-                    fields.Add(new InterfaceFieldNode(fieldName, typeAnn, SpanFromCtx(field)));
+                    var fnode = new InterfaceFieldNode(fieldName, typeAnn, SpanFromCtx(field));
+                    fnode.Annotations = VisitAnnotationListContent(field.annotationList());
+                    fields.Add(fnode);
                     break;
                 }
                 case LuxParser.InterfaceMethodMemberContext method:
@@ -313,6 +322,7 @@ internal partial class IRVisitor
                     var imTypeParams = VisitTypeParamListContent(method.funcSignature().typeParamList());
                     var imNode = new InterfaceMethodNode(methodName, parameters, returnType, isAsync, SpanFromCtx(method));
                     imNode.TypeParams = imTypeParams;
+                    imNode.Annotations = VisitAnnotationListContent(method.annotationList());
                     methods.Add(imNode);
                     break;
                 }
@@ -374,7 +384,9 @@ internal partial class IRVisitor
                     TypeRef? typeAnn = field.typeAnnotation() != null
                         ? (TypeRef)Visit(field.typeAnnotation().typeExpr())
                         : null;
-                    fields.Add(new ClassFieldNode(fieldName, typeAnn, null, isLocal, isStatic, isProtected, SpanFromCtx(field)));
+                    var fnode = new ClassFieldNode(fieldName, typeAnn, null, isLocal, isStatic, isProtected, SpanFromCtx(field));
+                    fnode.Annotations = VisitAnnotationListContent(field.annotationList());
+                    fields.Add(fnode);
                     break;
                 }
                 case LuxParser.DeclareClassMethodMemberContext method:
@@ -390,6 +402,7 @@ internal partial class IRVisitor
                     var methodTypeParams = VisitTypeParamListContent(method.funcSignature().typeParamList());
                     var cmNode = new ClassMethodNode(methodName, parameters, returnType, [], null, isLocal, isStatic, isAsync, isProtected, isOverride, isAbstract, SpanFromCtx(method));
                     cmNode.TypeParams = methodTypeParams;
+                    cmNode.Annotations = VisitAnnotationListContent(method.annotationList());
                     methods.Add(cmNode);
                     break;
                 }
@@ -397,6 +410,7 @@ internal partial class IRVisitor
                 {
                     var (parameters, _) = VisitFuncSignatureContent(ctor.funcSignature());
                     constructor = new ClassConstructorNode(parameters, [], null, SpanFromCtx(ctor));
+                    constructor.Annotations = VisitAnnotationListContent(ctor.annotationList());
                     break;
                 }
                 case LuxParser.DeclareClassOperatorMemberContext opMember:
@@ -415,6 +429,7 @@ internal partial class IRVisitor
                         isLocal: false, isStatic: false, isAsync: false,
                         isProtected: false, isOverride: false, isAbstract: false,
                         SpanFromCtx(opMember), isOperator: true, operatorSymbol: symText);
+                    opMethodNode.Annotations = VisitAnnotationListContent(opMember.annotationList());
                     methods.Add(opMethodNode);
                     break;
                 }
@@ -424,7 +439,9 @@ internal partial class IRVisitor
                     var propName = NameRefFromTerm(accessor.NAME(1));
                     var kind = kindName == "get" ? AccessorKind.Getter : AccessorKind.Setter;
                     var (parameters, returnType) = VisitFuncSignatureContent(accessor.funcSignature());
-                    accessors.Add(new ClassAccessorNode(kind, propName, parameters, returnType, [], null, false, SpanFromCtx(accessor)));
+                    var anode = new ClassAccessorNode(kind, propName, parameters, returnType, [], null, false, SpanFromCtx(accessor));
+                    anode.Annotations = VisitAnnotationListContent(accessor.annotationList());
+                    accessors.Add(anode);
                     break;
                 }
             }
@@ -469,7 +486,9 @@ internal partial class IRVisitor
                 {
                     var fieldName = NameRefFromTerm(field.NAME());
                     var typeAnn = (TypeRef)Visit(field.typeAnnotation().typeExpr());
-                    fields.Add(new InterfaceFieldNode(fieldName, typeAnn, SpanFromCtx(field)));
+                    var fnode = new InterfaceFieldNode(fieldName, typeAnn, SpanFromCtx(field));
+                    fnode.Annotations = VisitAnnotationListContent(field.annotationList());
+                    fields.Add(fnode);
                     break;
                 }
                 case LuxParser.InterfaceMethodMemberContext method:
@@ -480,6 +499,7 @@ internal partial class IRVisitor
                     var imTypeParams = VisitTypeParamListContent(method.funcSignature().typeParamList());
                     var imNode = new InterfaceMethodNode(methodName, parameters, returnType, isAsync, SpanFromCtx(method));
                     imNode.TypeParams = imTypeParams;
+                    imNode.Annotations = VisitAnnotationListContent(method.annotationList());
                     methods.Add(imNode);
                     break;
                 }
