@@ -238,7 +238,7 @@ public sealed class FunctionType : Type
         ReturnType = returnType;
         IsVararg = isVararg;
         VarargType = varargType;
-        DefaultParams = defaultParams ?? [];
+        DefaultParams = AddImplicitTrailingNullableDefaults(ParamTypes, defaultParams);
         IsAsync = isAsync;
     }
 
@@ -253,7 +253,7 @@ public sealed class FunctionType : Type
         ReturnType = returnType;
         IsVararg = isVararg;
         VarargType = varargType;
-        DefaultParams = defaultParams ?? [];
+        DefaultParams = AddImplicitTrailingNullableDefaults(ParamTypes, defaultParams);
         IsAsync = isAsync;
     }
 
@@ -264,8 +264,39 @@ public sealed class FunctionType : Type
         ReturnType = returnType;
         IsVararg = isVarargs;
         VarargType = varargType;
-        DefaultParams = defaultParams ?? [];
+        DefaultParams = AddImplicitTrailingNullableDefaults(ParamTypes, defaultParams);
         IsAsync = isAsync;
+    }
+
+    /// <summary>
+    /// Auto-extends the explicit <paramref name="defaults"/> list with the
+    /// indices of every <em>trailing</em> nullable parameter so callers can
+    /// elide them at the call site. With this, a signature like
+    /// <c>(a: number, b: number?, c: number?)</c> accepts 1, 2, or 3 args
+    /// without requiring the author to spell out <c>= nil</c>. Stops at the
+    /// first non-nullable param walking from the end, matching how
+    /// TypeScript's <c>?</c> works.
+    /// </summary>
+    private static List<int> AddImplicitTrailingNullableDefaults(List<Type> paramTypes, List<int>? defaults)
+    {
+        var result = defaults != null ? new List<int>(defaults) : [];
+        for (var i = paramTypes.Count - 1; i >= 0; i--)
+        {
+            if (!IsNullableParamType(paramTypes[i])) break;
+            if (!result.Contains(i)) result.Add(i);
+        }
+        return result;
+    }
+
+    private static bool IsNullableParamType(Type t)
+    {
+        if (t.Kind == TypeKind.PrimitiveNil) return true;
+        if (t is UnionType u)
+        {
+            foreach (var m in u.Types)
+                if (m.Kind == TypeKind.PrimitiveNil) return true;
+        }
+        return false;
     }
 
     protected override TypeKey GenerateNewKey()
@@ -343,6 +374,17 @@ public sealed class ClassType(
     public Dictionary<string, Side> GetterSides { get; } = new();
     public Dictionary<string, Side> SetterSides { get; } = new();
     public Side ConstructorSide { get; set; } = Side.All;
+
+    /// <summary>
+    /// Optional format-string template that overrides how <c>new ClassName(args)</c>
+    /// lowers to Lua at codegen. <c>null</c> means the default <c>ClassName.new(args)</c>
+    /// shape. Source: a <c>@overrideCtor("...")</c> builtin annotation on the class.
+    /// Placeholders: <c>$class</c> → the class identifier, <c>$args</c> → the
+    /// comma-separated rendered arguments. Used by external runtimes that expose
+    /// classes via a different call convention (e.g. nanos-world's <c>Database(args)</c>
+    /// vs Lux's <c>Database.new(args)</c>).
+    /// </summary>
+    public string? CtorTemplate { get; set; }
 
     protected override TypeKey GenerateNewKey()
     {

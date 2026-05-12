@@ -654,7 +654,36 @@ public sealed class CodegenPass() : Pass(PassName, PassScope.PerBuild, true)
 
     private void EmitNewExpr(PassContext ctx, PackageContext pkg, LuaGenerator gen, NewExpr ne)
     {
-        gen.Write(ResolveName(ctx, pkg, ne.ClassName));
+        var className = ResolveName(ctx, pkg, ne.ClassName);
+
+        var template = LookupCtorTemplate(ctx, pkg, ne.ClassName);
+        if (template != null)
+        {
+            var idx = template.IndexOf("$args", StringComparison.Ordinal);
+            if (idx >= 0)
+            {
+                gen.Write(template[..idx].Replace("$class", className));
+                for (var i = 0; i < ne.Arguments.Count; i++)
+                {
+                    if (i > 0) gen.Write(", ");
+                    EmitExpr(ctx, pkg, gen, ne.Arguments[i]);
+                }
+                gen.Write(template[(idx + "$args".Length)..].Replace("$class", className));
+                return;
+            }
+            
+            gen.Write(template.Replace("$class", className));
+            gen.Write("(");
+            for (var i = 0; i < ne.Arguments.Count; i++)
+            {
+                if (i > 0) gen.Write(", ");
+                EmitExpr(ctx, pkg, gen, ne.Arguments[i]);
+            }
+            gen.Write(")");
+            return;
+        }
+
+        gen.Write(className);
         gen.Write(".new(");
         for (var i = 0; i < ne.Arguments.Count; i++)
         {
@@ -662,6 +691,14 @@ public sealed class CodegenPass() : Pass(PassName, PassScope.PerBuild, true)
             EmitExpr(ctx, pkg, gen, ne.Arguments[i]);
         }
         gen.Write(")");
+    }
+
+    private static string? LookupCtorTemplate(PassContext ctx, PackageContext pkg, NameRef className)
+    {
+        if (className.Sym == SymID.Invalid) return null;
+        if (!pkg.Syms.GetByID(className.Sym, out var sym)) return null;
+        if (!ctx.Types.GetByID(sym.Type, out var rawType)) return null;
+        return rawType is ClassType ct ? ct.CtorTemplate : null;
     }
 
     #endregion

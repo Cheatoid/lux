@@ -12,8 +12,9 @@ namespace Lux.Compiler.Annotations;
 public static class BuiltinAnnotations
 {
     public const string Side = "side";
+    public const string OverrideCtor = "overrideCtor";
 
-    private static readonly HashSet<string> Names = new(StringComparer.Ordinal) { Side };
+    private static readonly HashSet<string> Names = new(StringComparer.Ordinal) { Side, OverrideCtor };
 
     public static bool IsBuiltin(string name) => Names.Contains(name);
 
@@ -88,4 +89,27 @@ public static class BuiltinAnnotations
         DotAccessExpr { Object: NameExpr } dot => dot.FieldName.Name,
         _ => null,
     };
+
+    /// <summary>
+    /// Extracts the format-string template from <c>@overrideCtor("...")</c> on
+    /// a class declaration. Returns null when the annotation is absent or its
+    /// argument is not a string literal. The template controls how
+    /// <c>new ClassName(args)</c> lowers to Lua at codegen — see
+    /// <see cref="Passes.CodegenPass"/> for the substitution rules:
+    /// <list type="bullet">
+    ///   <item><description><c>$class</c> → the resolved class name in Lua.</description></item>
+    ///   <item><description><c>$args</c> → the comma-separated rendered arguments.</description></item>
+    /// </list>
+    /// </summary>
+    public static string? ExtractOverrideCtor(List<Annotation>? annotations)
+    {
+        if (annotations == null || annotations.Count == 0) return null;
+        foreach (var ann in annotations)
+        {
+            if (ann.Name.Name != OverrideCtor) continue;
+            if (ann.Args.Count == 0) continue;
+            if (ann.Args[0].Value is StringLiteralExpr sl) return sl.Value;
+        }
+        return null;
+    }
 }

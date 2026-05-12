@@ -380,6 +380,9 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
             if (sym.Name == "self" && sym.DeclaringNode == cd.ID && sym.Type == TypID.Invalid)
                 pc.Pkg.Syms.SetType(id, classType.ID);
 
+        var ctorTemplate = Lux.Compiler.Annotations.BuiltinAnnotations.ExtractOverrideCtor(cd.Annotations);
+        if (ctorTemplate != null) classType.CtorTemplate = ctorTemplate;
+
         if (cd.BaseClass != null && cd.BaseClass.Sym != SymID.Invalid)
         {
             var baseTyp = LookupSymbolType(pc, cd.BaseClass.Sym);
@@ -1245,10 +1248,14 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
             var ctorType = classType.ConstructorType;
             var argCount = newExpr.Arguments.Count;
             var paramCount = ctorType.ParamTypes.Count;
-            if (argCount < ctorType.MinParamCount || argCount > paramCount)
+            var minParams = ctorType.MinParamCount;
+            if (argCount < minParams || argCount > paramCount)
             {
+                var expected = minParams == paramCount
+                    ? paramCount.ToString()
+                    : $"{minParams}..{paramCount}";
                 pc.Diag.Report(newExpr.Span, DiagnosticCode.ErrConstructorParamMismatch,
-                    newExpr.ClassName.Name, paramCount.ToString(), argCount.ToString());
+                    newExpr.ClassName.Name, expected, argCount.ToString());
             }
         }
 

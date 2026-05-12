@@ -127,6 +127,36 @@ A few annotations ship with the stdlib:
 
 The full list lives in `stdlib/annotation.d.lux`.
 
+### Compiler builtins
+
+A separate, smaller set of annotations is recognised directly by the
+compiler &mdash; they don't go through the user-script annotation pipeline,
+can't be redefined or rewritten, and don't need an `[annotations]` entry in
+`lux.toml`. They mutate compile-time behaviour rather than IR.
+
+- `@side(client | server | shared)` &mdash; multiplayer-sandbox execution-side
+  scoping for declarations. See [Sides](24-sides.md) for the full mental
+  model.
+- `@overrideCtor("template")` &mdash; overrides how `new ClassName(args)`
+  lowers to Lua. Applied to a `class` (or `declare class`) decl. The
+  template is a format string with two placeholders:
+    - `$class` &mdash; the resolved class identifier
+    - `$args` &mdash; the comma-separated rendered arguments
+
+  Example: nanos-world exposes every class as a global call
+  (`Player(args)`, not `Player.new(args)`). The `nanos-world-types` package
+  emits `@overrideCtor("$class($args)")` on every class so:
+
+  ```lua
+  -- source
+  local p = new Player()
+  -- generated Lua
+  local p = Player()
+  ```
+
+  When the template has no `$args` placeholder, the compiler appends a
+  default `(args)` call so the arguments are never silently dropped.
+
 ---
 
 ## Writing a non-trivial annotation
