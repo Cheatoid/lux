@@ -62,21 +62,36 @@ public sealed class ProjectCreator
 
         var fileName = Path.GetFileName(new Uri(url).AbsolutePath);
         if (string.IsNullOrEmpty(fileName)) fileName = "setup.lux";
-        var setupPath = Path.Combine(targetDir, fileName);
+        var tempDir = Path.Combine(Path.GetTempPath(), "lux-create-url-" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(tempDir);
+        var setupPath = Path.Combine(tempDir, fileName);
 
         try
         {
             Console.WriteLine($"Downloading {url}...");
             var content = await Http.GetStringAsync(url);
             await File.WriteAllTextAsync(setupPath, content);
+
+            Directory.CreateDirectory(targetDir);
+
+            if (opts.SkipSetup)
+            {
+                File.Copy(setupPath, Path.Combine(targetDir, fileName));
+                Console.WriteLine($"Setup script saved to '{targetDir}/{fileName}'. Setup skipped.");
+                return 0;
+            }
+
+            return await RunSetupAsync(setupPath, targetDir);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not PackageManagerException)
         {
             await Console.Error.WriteLineAsync($"error: failed to download setup script: {ex.Message}");
             return 1;
         }
-
-        return opts.SkipSetup ? 0 : await RunSetupAsync(setupPath, targetDir);
+        finally
+        {
+            try { if (Directory.Exists(tempDir)) Directory.Delete(tempDir, recursive: true); } catch { }
+        }
     }
 
     private async Task<int> CreateFromPackageSpecAsync(string specString, CreateOptions opts)
@@ -130,8 +145,7 @@ public sealed class ProjectCreator
                 await Console.Error.WriteLineAsync($"error: {err}");
                 return 1;
             }
-            CopyDirectory(src, target);
-            return await RunTemplateSetupAsync(target, opts);
+            return await PopulateTargetDirAsync(src, target, opts);
         }
 
         if (spec.Kind != SpecKind.Git)
@@ -154,49 +168,63 @@ public sealed class ProjectCreator
             return 1;
         }
 
+        var stagingDir = Path.Combine(Path.GetTempPath(), "lux-create-stage-" + Guid.NewGuid().ToString("N")[..8]);
         try
         {
-            Directory.CreateDirectory(LuxHome.StoreRoot);
             Directory.CreateDirectory(LuxHome.GitCacheRoot);
 
             Console.WriteLine($"Fetching {specString}...");
             var barePath = await _fetcher.EnsureBareCloneAsync(spec);
             var commit = await ResolveGitRefAsync(barePath, spec);
-            var storePath = LuxHome.PackagePath(spec.Host!, spec.Owner!, spec.Repo!, commit);
-            await _fetcher.EnsureSnapshotAsync(barePath, commit, storePath, spec.Subdir);
+            await _fetcher.EnsureSnapshotAsync(barePath, commit, stagingDir, spec.Subdir, forceFresh: true);
 
-            CopyDirectory(storePath, targetDir);
+            return await PopulateTargetDirAsync(stagingDir, targetDir, opts);
         }
         catch (PackageManagerException ex)
         {
             await Console.Error.WriteLineAsync($"error: {ex.Message}");
             return 1;
         }
-
-        return await RunTemplateSetupAsync(targetDir, opts);
+        finally
+        {
+            try { if (Directory.Exists(stagingDir)) Directory.Delete(stagingDir, recursive: true); } catch { }
+        }
     }
 
-    private async Task<int> RunTemplateSetupAsync(string targetDir, CreateOptions opts)
+    /// <summary>
+    /// Final step of every `lux create` flow. Receives the populated staging
+    /// dir, decides whether to run a setup script or do a bulk copy, and
+    /// leaves <paramref name="targetDir"/> containing only what the user
+    /// actually wants:
+    /// <list type="bullet">
+    ///   <item><description>If staging has a <c>setup.lux</c>/<c>setup.lua</c>, run it with CWD=<paramref name="targetDir"/>
+    ///     (which stays empty until the script writes files into it). The template's
+    ///     own source files never land in the project.</description></item>
+    ///   <item><description>If staging has no setup script, copy staging → target verbatim
+    ///     (classic template-without-setup mode).</description></item>
+    /// </list>
+    /// </summary>
+    private static async Task<int> PopulateTargetDirAsync(string stagingDir, string targetDir, CreateOptions opts)
     {
-        if (opts.SkipSetup)
-        {
-            Console.WriteLine($"Template copied to '{targetDir}'. Setup skipped.");
-            return 0;
-        }
-
-        var setupLux = Path.Combine(targetDir, "setup.lux");
-        var setupLua = Path.Combine(targetDir, "setup.lua");
+        var setupLux = Path.Combine(stagingDir, "setup.lux");
+        var setupLua = Path.Combine(stagingDir, "setup.lua");
         string? setupPath = File.Exists(setupLux) ? setupLux
                          : File.Exists(setupLua) ? setupLua
                          : null;
 
-        if (setupPath == null)
+        Directory.CreateDirectory(targetDir);
+
+        if (setupPath != null && !opts.SkipSetup)
         {
-            Console.WriteLine($"Template copied to '{targetDir}'. No setup.lux/setup.lua found — skipping.");
-            return 0;
+            return await RunSetupAsync(setupPath, targetDir);
         }
 
-        return await RunSetupAsync(setupPath, targetDir);
+        CopyDirectory(stagingDir, targetDir);
+        if (setupPath != null && opts.SkipSetup)
+        {
+            Console.WriteLine($"Template copied to '{targetDir}'. Setup skipped.");
+        }
+        return 0;
     }
 
     private static async Task<int> RunSetupAsync(string setupPath, string projectDir)

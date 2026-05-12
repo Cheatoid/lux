@@ -37,6 +37,7 @@ internal static class Program
             "add" => await RunAddAsync(args.Skip(1).ToArray()),
             "remove" or "rm" => await RunRemoveAsync(args.Skip(1).ToArray()),
             "registry" => await RunRegistryAsync(args.Skip(1).ToArray()),
+            "pm" => await RunPmAsync(args.Skip(1).ToArray()),
             "docs" => await RunDocsAsync(args.Skip(1).ToArray()),
             "test" => await RunTestAsync(args.Skip(1).ToArray()),
             "compile" => await RunCompileAsync(args.Skip(1).ToArray()),
@@ -527,7 +528,8 @@ internal static class Program
         Console.WriteLine("  add <spec>         Add a dependency (e.g. github:owner/repo@v1)");
         Console.WriteLine("                     Flags: --dev, --peer");
         Console.WriteLine("  remove <name>      Remove a declared dependency");
-        Console.WriteLine("  registry refresh   Refresh the cached alias registry index");
+        Console.WriteLine("  pm prune [spec]    Wipe cached bare clones / snapshots so next install re-fetches");
+        Console.WriteLine("  pm refresh-registry  Refresh the cached alias registry index");
         Console.WriteLine("  docs               Generate documentation site (Markdown + HTML)");
         Console.WriteLine("                     Flags: --out <dir>, --no-html, --no-md");
         Console.WriteLine("  test [filter]      Discover and run unit/integration tests");
@@ -1574,21 +1576,115 @@ internal static class Program
         switch (sub)
         {
             case "refresh":
-                try
-                {
-                    await Registry.RefreshAsync();
-                    Console.WriteLine($"Registry index refreshed from {Registry.EffectiveUrl()}.");
-                    return 0;
-                }
-                catch (Exception ex)
-                {
-                    await Console.Error.WriteLineAsync($"error: {ex.Message}");
-                    return 1;
-                }
+                await Console.Error.WriteLineAsync("warning: `lux registry refresh` has moved to `lux pm refresh-registry`.");
+                return await RunPmRefreshRegistry();
             default:
-                await Console.Error.WriteLineAsync("Usage: lux registry refresh");
+                await Console.Error.WriteLineAsync("Usage: lux pm refresh-registry");
                 return 1;
         }
+    }
+
+    /// <summary>
+    /// Package-manager utility subcommands. Currently only <c>prune</c>, which
+    /// wipes the on-disk caches so the next <c>install</c> / <c>create</c>
+    /// re-fetches from origin. Use <c>lux pm prune</c> when a package was
+    /// republished under the same ref (force-pushed tag, mutable branch) and
+    /// the cached snapshot is now stale.
+    /// </summary>
+    private static async Task<int> RunPmAsync(string[] args)
+    {
+        var sub = args.Length > 0 ? args[0].ToLowerInvariant() : "";
+        return sub switch
+        {
+            "prune" => RunPmPrune(args.Skip(1).ToArray()),
+            "refresh-registry" => await RunPmRefreshRegistry(),
+            _ => RunPmHelp(),
+        };
+    }
+
+    private static int RunPmHelp()
+    {
+        Console.WriteLine("Usage:");
+        Console.WriteLine("  lux pm prune                  Wipe ALL cached bare clones, snapshots and tmp staging.");
+        Console.WriteLine("  lux pm prune <git-spec>       Wipe the bare clone + every cached snapshot for one repo");
+        Console.WriteLine("                                (e.g. `lux pm prune github:LuaLux/nanos-world-types`).");
+        Console.WriteLine("  lux pm refresh-registry       Refresh the cached alias registry index.");
+        return 0;
+    }
+
+    private static async Task<int> RunPmRefreshRegistry()
+    {
+        try
+        {
+            await Registry.RefreshAsync();
+            Console.WriteLine($"Registry index refreshed from {Registry.EffectiveUrl()}.");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            await Console.Error.WriteLineAsync($"error: {ex.Message}");
+            return 1;
+        }
+    }
+
+    private static int RunPmPrune(string[] args)
+    {
+        if (args.Length == 0)
+        {
+            return PrunePaths(
+                ("git cache",     LuxHome.GitCacheRoot),
+                ("package store", LuxHome.StoreRoot),
+                ("tmp staging",   LuxHome.TmpRoot));
+        }
+
+        PackageSpec spec;
+        try { spec = PackageSpec.Parse(args[0]); }
+        catch (PackageManagerException ex)
+        {
+            Console.Error.WriteLine($"error: {ex.Message}");
+            return 1;
+        }
+
+        if (spec.Kind != SpecKind.Git || spec.Host == null || spec.Owner == null || spec.Repo == null)
+        {
+            Console.Error.WriteLine("error: `lux pm prune <spec>` requires a git specifier (github:owner/repo, gitlab:..., git+url).");
+            return 1;
+        }
+
+        var barePath = LuxHome.BareClonePath(spec.Host, spec.Owner, spec.Repo);
+        var storeRepoDir = Path.GetDirectoryName(LuxHome.PackagePath(spec.Host, spec.Owner, spec.Repo, "x"))!;
+        return PrunePaths(
+            ($"bare clone {spec.Host}/{spec.Owner}/{spec.Repo}", barePath),
+            ($"snapshots {spec.Host}/{spec.Owner}/{spec.Repo}", storeRepoDir));
+    }
+
+    private static int PrunePaths(params (string Label, string Path)[] targets)
+    {
+        var anyExisted = false;
+        foreach (var (label, path) in targets)
+        {
+            if (string.IsNullOrEmpty(path) || !Directory.Exists(path))
+            {
+                Console.WriteLine($"  {label}: nothing to prune ({path})");
+                continue;
+            }
+            try
+            {
+                Directory.Delete(path, recursive: true);
+                Console.WriteLine($"  {label}: pruned ({path})");
+                anyExisted = true;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"  {label}: failed to prune {path}: {ex.Message}");
+                return 1;
+            }
+        }
+
+        Console.WriteLine(anyExisted
+            ? "Cache pruned. Next install/create will re-fetch from origin."
+            : "Nothing to prune.");
+        return 0;
     }
 
     /// <summary>

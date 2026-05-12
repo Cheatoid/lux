@@ -245,13 +245,26 @@ lux remove cool-lib
 
 ---
 
-## `lux registry refresh`
+## `lux pm prune [<spec>]`
+
+Wipe the on-disk package caches so the next `install` / `create` re-fetches from origin. Use when a package was republished under the same ref (force-pushed tag, mutable branch) and the cached snapshot is now stale.
+
+```bash
+lux pm prune                                        # wipe ALL caches
+lux pm prune github:LuaLux/nanos-world-types        # wipe one repo's bare clone + snapshots
+```
+
+`lux pm prune` (no args) removes `~/.lux/cache/git`, `~/.lux/store` and `~/.lux/tmp`. With a git spec it removes only that repo's bare clone and every commit snapshot of it.
+
+## `lux pm refresh-registry`
 
 Re-downloads the alias registry index so name → git-URL lookups (`lux add cool-lib@v1`) see the latest published packages.
 
 ```bash
-lux registry refresh
+lux pm refresh-registry
 ```
+
+`lux registry refresh` still works as a deprecated alias and prints a one-line migration notice.
 
 ---
 

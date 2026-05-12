@@ -86,12 +86,20 @@ public sealed class GitFetcher
     }
 
     /// <summary>
-    /// Extracts a commit snapshot from the bare clone into the store. Idempotent — if the
-    /// destination already exists, returns immediately.
+    /// Extracts a commit snapshot from the bare clone into <paramref name="destDir"/>.
+    /// Idempotent by default — if the destination already exists and is non-empty,
+    /// returns immediately. Pass <paramref name="forceFresh"/> to wipe the destination
+    /// first (used by <c>lux create</c> so the target staging dir always reflects the
+    /// just-fetched commit, never a leftover from a prior run).
     /// </summary>
-    public async Task EnsureSnapshotAsync(string barePath, string commit, string destDir, string? subdir = null)
+    public async Task EnsureSnapshotAsync(string barePath, string commit, string destDir, string? subdir = null, bool forceFresh = false)
     {
-        if (Directory.Exists(destDir) && Directory.EnumerateFileSystemEntries(destDir).Any())
+        if (forceFresh && Directory.Exists(destDir))
+        {
+            try { Directory.Delete(destDir, recursive: true); } catch { /* best effort */ }
+        }
+
+        if (!forceFresh && Directory.Exists(destDir) && Directory.EnumerateFileSystemEntries(destDir).Any())
             return;
 
         Directory.CreateDirectory(LuxHome.TmpRoot);
