@@ -23,26 +23,43 @@ public sealed class SignatureHelpHandler(LuxWorkspace workspace) : SignatureHelp
 
         var calleeSym = SymID.Invalid;
         List<Expr> arguments;
+        FunctionType? ft = null;
+        string calleeLabel = "fn";
 
         switch (callNode)
         {
             case FunctionCallExpr fce:
                 if (fce.Callee is NameExpr ne) calleeSym = ne.Name.Sym;
-                arguments = fce.Arguments;
+                if (calleeSym == SymID.Invalid && fce.Callee is DotAccessExpr fcDot)
+                {
+                    ft = ResolveMemberAsFunction(result, fcDot.Object, fcDot.FieldName.Name, isStatic: true);
+                    if (ft != null) calleeLabel = fcDot.FieldName.Name;
+                }
                 break;
             case MethodCallExpr mce:
                 calleeSym = mce.MethodName.Sym;
                 arguments = mce.Arguments;
+                if (calleeSym == SymID.Invalid)
+                {
+                    ft = ResolveMemberAsFunction(result, mce.Object, mce.MethodName.Name, isStatic: false);
+                    if (ft != null) calleeLabel = mce.MethodName.Name;
+                }
                 break;
             default:
                 return Task.FromResult<SignatureHelp?>(null);
         }
 
-        if (calleeSym == SymID.Invalid || !result.Syms.GetByID(calleeSym, out var sym))
-            return Task.FromResult<SignatureHelp?>(null);
-
-        if (!result.Types.GetByID(sym.Type, out var typ) || typ is not FunctionType ft)
-            return Task.FromResult<SignatureHelp?>(null);
+        Symbol? sym = null;
+        if (ft == null)
+        {
+            if (calleeSym == SymID.Invalid || !result.Syms.GetByID(calleeSym, out var s))
+                return Task.FromResult<SignatureHelp?>(null);
+            sym = s;
+            if (!result.Types.GetByID(sym.Type, out var typ) || typ is not FunctionType bound)
+                return Task.FromResult<SignatureHelp?>(null);
+            ft = bound;
+            calleeLabel = sym.Name;
+        }
 
         var activeParam = CountActiveParam(result.SourceText, request.Position);
 
@@ -50,7 +67,7 @@ public sealed class SignatureHelpHandler(LuxWorkspace workspace) : SignatureHelp
         List<Parameter>? declParams = null;
         Doc.DocComment? doc = null;
 
-        if (sym.DeclaringNode != NodeID.Invalid && result.NodeRegistry.TryGetValue(sym.DeclaringNode, out var declNode))
+        if (sym != null && sym.DeclaringNode != NodeID.Invalid && result.NodeRegistry.TryGetValue(sym.DeclaringNode, out var declNode))
         {
             declParams = declNode switch
             {
@@ -103,7 +120,10 @@ public sealed class SignatureHelpHandler(LuxWorkspace workspace) : SignatureHelp
         }
         else
         {
-            for (var i = 0; i < ft.ParamTypes.Count; i++)
+            var skipFirst = callNode is MethodCallExpr
+                && ft.ParamTypes.Count > 0 && ft.ParamNames.Count > 0
+                && ft.ParamNames[0] == "self";
+            for (var i = skipFirst ? 1 : 0; i < ft.ParamTypes.Count; i++)
             {
                 var pType = workspace.FormatType(result.Types, ft.ParamTypes[i]);
                 var defaultHint = ft.DefaultParams.Contains(i) ? " = ..." : "";
@@ -129,7 +149,7 @@ public sealed class SignatureHelpHandler(LuxWorkspace workspace) : SignatureHelp
 
         var retType = workspace.FormatType(result.Types, ft.ReturnType);
         var paramStr = string.Join(", ", paramInfos.Select(p => p.Label.Label));
-        var label = $"{sym.Name}({paramStr}) -> {retType}";
+        var label = $"{calleeLabel}({paramStr}) -> {retType}";
 
         var sigInfo = new SignatureInformation
         {
@@ -150,6 +170,56 @@ public sealed class SignatureHelpHandler(LuxWorkspace workspace) : SignatureHelp
             ActiveSignature = 0,
             ActiveParameter = Math.Min(activeParam, Math.Max(0, paramInfos.Count - 1))
         });
+    }
+
+    /// <summary>
+    /// Looks up a method/field-as-function on the receiver expression's type,
+    /// walking class inheritance and interface base graphs. Returns the
+    /// <see cref="FunctionType"/> when the member exists, null otherwise.
+    /// Used so signature help works on calls whose callee has no bound
+    /// symbol — e.g. <c>player:GetValue(...)</c> inheriting from
+    /// <c>Entity</c>, or <c>Events.CallRemote(...)</c> with side-overloaded
+    /// dispatch.
+    /// </summary>
+    private FunctionType? ResolveMemberAsFunction(AnalysisResult result, Expr receiver, string name, bool isStatic)
+    {
+        if (receiver.Type == TypID.Invalid) return null;
+        if (!result.Types.GetByID(receiver.Type, out var rt)) return null;
+
+        if (rt is UnionType u)
+        {
+            foreach (var m in u.Types)
+                if (m.Kind != TypeKind.PrimitiveNil) { rt = m; break; }
+        }
+
+        if (rt is ClassType ct)
+        {
+            for (var cur = ct; cur != null; cur = cur.BaseClass)
+            {
+                if (isStatic && cur.StaticMethods.TryGetValue(name, out var sm)) return sm;
+                if (!isStatic && cur.Methods.TryGetValue(name, out var im)) return im;
+            }
+            return null;
+        }
+        if (rt is InterfaceType ift)
+        {
+            var visited = new HashSet<InterfaceType>();
+            var queue = new Queue<InterfaceType>();
+            queue.Enqueue(ift);
+            while (queue.TryDequeue(out var cur))
+            {
+                if (!visited.Add(cur)) continue;
+                if (cur.Methods.TryGetValue(name, out var m)) return m;
+                foreach (var b in cur.BaseInterfaces) queue.Enqueue(b);
+            }
+            return null;
+        }
+        if (rt is StructType st)
+        {
+            var field = st.Fields.FirstOrDefault(f => f.Name.Name == name);
+            return field?.Type as FunctionType;
+        }
+        return null;
     }
 
     /// <summary>

@@ -361,24 +361,12 @@ public sealed class CompletionHandler(LuxWorkspace workspace) : CompletionHandle
                 }
                 case ClassType ct:
                 {
-                    if (ct.InstanceFields.TryGetValue(segments[s].Name, out var f))
-                        currentTypeId = f.Type.ID;
-                    else if (ct.Methods.TryGetValue(segments[s].Name, out var m))
-                        currentTypeId = m.ID;
-                    else if (ct.Getters.TryGetValue(segments[s].Name, out var g))
-                        currentTypeId = g.ReturnType.ID;
-                    else if (ct.StaticMethods.TryGetValue(segments[s].Name, out var sm))
-                        currentTypeId = sm.ID;
-                    else return null;
+                    if (!TryLookupClassMember(ct, segments[s].Name, out currentTypeId)) return null;
                     break;
                 }
                 case InterfaceType it:
                 {
-                    if (it.Fields.TryGetValue(segments[s].Name, out var f))
-                        currentTypeId = f.Type.ID;
-                    else if (it.Methods.TryGetValue(segments[s].Name, out var m))
-                        currentTypeId = m.ID;
-                    else return null;
+                    if (!TryLookupInterfaceMember(it, segments[s].Name, out currentTypeId)) return null;
                     break;
                 }
                 default:
@@ -441,45 +429,53 @@ public sealed class CompletionHandler(LuxWorkspace workspace) : CompletionHandle
         if (finalType is ClassType classType)
         {
             var classItems = new List<CompletionItem>();
-            foreach (var (name, field) in classType.InstanceFields)
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            for (var cur = classType; cur != null; cur = cur.BaseClass)
             {
-                classItems.Add(new CompletionItem
+                foreach (var (name, field) in cur.InstanceFields)
                 {
-                    Label = name,
-                    Kind = CompletionItemKind.Field,
-                    Detail = workspace.FormatType(result.Types, field.Type.ID)
-                });
-            }
+                    if (!seen.Add(name)) continue;
+                    classItems.Add(new CompletionItem
+                    {
+                        Label = name,
+                        Kind = CompletionItemKind.Field,
+                        Detail = workspace.FormatType(result.Types, field.Type.ID)
+                    });
+                }
 
-            foreach (var (name, method) in classType.Methods)
-            {
-                if (name.StartsWith("__")) continue;
-                classItems.Add(new CompletionItem
+                foreach (var (name, method) in cur.Methods)
                 {
-                    Label = name,
-                    Kind = CompletionItemKind.Method,
-                    Detail = workspace.FormatType(result.Types, method.ID)
-                });
-            }
+                    if (name.StartsWith("__")) continue;
+                    if (!seen.Add(name)) continue;
+                    classItems.Add(new CompletionItem
+                    {
+                        Label = name,
+                        Kind = CompletionItemKind.Method,
+                        Detail = workspace.FormatType(result.Types, method.ID)
+                    });
+                }
 
-            foreach (var (name, method) in classType.StaticMethods)
-            {
-                classItems.Add(new CompletionItem
+                foreach (var (name, method) in cur.StaticMethods)
                 {
-                    Label = name,
-                    Kind = CompletionItemKind.Method,
-                    Detail = workspace.FormatType(result.Types, method.ID)
-                });
-            }
+                    if (!seen.Add(name)) continue;
+                    classItems.Add(new CompletionItem
+                    {
+                        Label = name,
+                        Kind = CompletionItemKind.Method,
+                        Detail = workspace.FormatType(result.Types, method.ID)
+                    });
+                }
 
-            foreach (var (name, getter) in classType.Getters)
-            {
-                classItems.Add(new CompletionItem
+                foreach (var (name, getter) in cur.Getters)
                 {
-                    Label = name,
-                    Kind = CompletionItemKind.Property,
-                    Detail = workspace.FormatType(result.Types, getter.ReturnType.ID)
-                });
+                    if (!seen.Add(name)) continue;
+                    classItems.Add(new CompletionItem
+                    {
+                        Label = name,
+                        Kind = CompletionItemKind.Property,
+                        Detail = workspace.FormatType(result.Types, getter.ReturnType.ID)
+                    });
+                }
             }
 
             if (classType.ConstructorType != null)
@@ -725,6 +721,47 @@ public sealed class CompletionHandler(LuxWorkspace workspace) : CompletionHandle
             "nil" => "nil",
             _ => "..."
         };
+    }
+
+    /// <summary>
+    /// Walks the class inheritance chain looking for a member named
+    /// <paramref name="name"/>. Returns its type via <paramref name="typeId"/>
+    /// when found. Required so a chain like <c>player.GetValue</c> resolves
+    /// even when <c>GetValue</c> is defined on <c>Entity</c>, the base class
+    /// of <c>Player</c>.
+    /// </summary>
+    private static bool TryLookupClassMember(ClassType ct, string name, out TypID typeId)
+    {
+        for (var cur = ct; cur != null; cur = cur.BaseClass)
+        {
+            if (cur.InstanceFields.TryGetValue(name, out var f)) { typeId = f.Type.ID; return true; }
+            if (cur.Methods.TryGetValue(name, out var m)) { typeId = m.ID; return true; }
+            if (cur.Getters.TryGetValue(name, out var g)) { typeId = g.ReturnType.ID; return true; }
+            if (cur.StaticMethods.TryGetValue(name, out var sm)) { typeId = sm.ID; return true; }
+        }
+        typeId = TypID.Invalid;
+        return false;
+    }
+
+    /// <summary>
+    /// Walks the interface inheritance chain (breadth-first across BaseInterfaces)
+    /// looking for a member named <paramref name="name"/>. Companion to
+    /// <see cref="TryLookupClassMember"/>.
+    /// </summary>
+    private static bool TryLookupInterfaceMember(InterfaceType it, string name, out TypID typeId)
+    {
+        var visited = new HashSet<InterfaceType>();
+        var queue = new Queue<InterfaceType>();
+        queue.Enqueue(it);
+        while (queue.TryDequeue(out var cur))
+        {
+            if (!visited.Add(cur)) continue;
+            if (cur.Fields.TryGetValue(name, out var f)) { typeId = f.Type.ID; return true; }
+            if (cur.Methods.TryGetValue(name, out var m)) { typeId = m.ID; return true; }
+            foreach (var b in cur.BaseInterfaces) queue.Enqueue(b);
+        }
+        typeId = TypID.Invalid;
+        return false;
     }
 
     private static TypID StripNil(TypeTable types, TypID id)

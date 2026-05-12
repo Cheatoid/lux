@@ -125,6 +125,12 @@ public sealed class HoverHandler(LuxWorkspace workspace) : HoverHandlerBase
             });
         }
 
+        if (nameRef != null && nameRef.Sym == SymID.Invalid)
+        {
+            var memberHover = TryMemberHover(result, hoveredNode, nameRef);
+            if (memberHover != null) return Task.FromResult<Hover?>(memberHover);
+        }
+
         var annotation = FindAnnotationAt(result.Hir, line, col);
         if (annotation != null)
         {
@@ -159,6 +165,164 @@ public sealed class HoverHandler(LuxWorkspace workspace) : HoverHandlerBase
         }
 
         return Task.FromResult<Hover?>(null);
+    }
+
+    /// <summary>
+    /// Builds the hover for a member access whose NameRef has no bound
+    /// symbol (call-site method names and dot-access field names). Looks up
+    /// the member on the receiver's type — walking the class inheritance
+    /// chain and the interface base graph so e.g. <c>player:GetValue(...)</c>
+    /// finds the method on <c>Entity</c>, <c>Player</c>'s parent class.
+    /// </summary>
+    private Hover? TryMemberHover(AnalysisResult result, Node? hoveredNode, NameRef nameRef)
+    {
+        Expr? receiver = null;
+        string? memberName = null;
+        bool isMethodCall = false;
+
+        // NodeFinder picks the tightest span, but ExprStmt and its inner
+        // expression share the same span — when the tie isn't broken the
+        // statement wraps the call we actually want. Unwrap it here.
+        if (hoveredNode is ExprStmt es) hoveredNode = es.Expression;
+
+        switch (hoveredNode)
+        {
+            case MethodCallExpr mc when mc.MethodName == nameRef:
+                receiver = mc.Object;
+                memberName = mc.MethodName.Name;
+                isMethodCall = true;
+                break;
+            case DotAccessExpr dot when dot.FieldName == nameRef:
+                receiver = dot.Object;
+                memberName = dot.FieldName.Name;
+                break;
+            // The cursor on a method/field name can sometimes land on a
+            // FunctionCall whose callee is a DotAccess (e.g. `Events.CallRemote(...)`).
+            case FunctionCallExpr fc when fc.Callee is DotAccessExpr fcd && fcd.FieldName == nameRef:
+                receiver = fcd.Object;
+                memberName = fcd.FieldName.Name;
+                break;
+        }
+
+        if (receiver == null || memberName == null) return null;
+        if (receiver.Type == TypID.Invalid) return null;
+        if (!result.Types.GetByID(receiver.Type, out var recvType)) return null;
+
+        recvType = UnwrapNullable(result, recvType);
+
+        var (display, declNode, typesLine) = ResolveMemberDisplay(result, recvType, memberName, isMethodCall);
+        if (display == null) return null;
+
+        var hoverValue = $"```lux\n{display}\n```";
+        if (!string.IsNullOrEmpty(typesLine)) hoverValue += $"\n\n{typesLine}";
+        if (declNode is Decl decl && decl.Doc != null)
+        {
+            var docMd = Doc.DocMarkdown.Render(decl.Doc);
+            if (!string.IsNullOrEmpty(docMd)) hoverValue += $"\n\n---\n\n{docMd}";
+        }
+
+        return new Hover
+        {
+            Contents = new MarkedStringsOrMarkupContent(new MarkupContent
+            {
+                Kind = MarkupKind.Markdown,
+                Value = hoverValue
+            }),
+            Range = LuxWorkspace.SpanToRange(nameRef.Span)
+        };
+    }
+
+    private static IR.Type UnwrapNullable(AnalysisResult result, IR.Type t)
+    {
+        if (t is UnionType u)
+        {
+            foreach (var m in u.Types)
+                if (m.Kind != TypeKind.PrimitiveNil) return UnwrapNullable(result, m);
+        }
+        return t;
+    }
+
+    /// <summary>
+    /// Looks up a member on a class/interface (walking inheritance) and
+    /// returns a hover-ready label, the optional source declaration node
+    /// (for doc comments), and the workspace's "Type references" footer line.
+    /// </summary>
+    private (string? Display, Node? DeclNode, string? TypesLine) ResolveMemberDisplay(
+        AnalysisResult result, IR.Type recvType, string name, bool isMethodCall)
+    {
+        if (recvType is ClassType ct)
+        {
+            for (var cur = ct; cur != null; cur = cur.BaseClass)
+            {
+                if (cur.Methods.TryGetValue(name, out var im))
+                    return (FormatMember(result, ct.Name, name, im, isMethodLike: true),
+                        null, workspace.FormatTypeReferencesLine(result, im.ID));
+                if (cur.StaticMethods.TryGetValue(name, out var sm))
+                    return (FormatMember(result, ct.Name, name, sm, isMethodLike: true, isStatic: true),
+                        null, workspace.FormatTypeReferencesLine(result, sm.ID));
+                if (cur.Getters.TryGetValue(name, out var g))
+                    return ($"(getter) {ct.Name}.{name}: {workspace.FormatType(result.Types, g.ReturnType)}",
+                        null, workspace.FormatTypeReferencesLine(result, g.ReturnType.ID));
+                if (cur.InstanceFields.TryGetValue(name, out var f))
+                    return ($"(field) {ct.Name}.{name}: {workspace.FormatType(result.Types, f.Type)}",
+                        null, workspace.FormatTypeReferencesLine(result, f.Type.ID));
+            }
+        }
+        else if (recvType is InterfaceType ift)
+        {
+            var visited = new HashSet<InterfaceType>();
+            var queue = new Queue<InterfaceType>();
+            queue.Enqueue(ift);
+            while (queue.TryDequeue(out var cur))
+            {
+                if (!visited.Add(cur)) continue;
+                if (cur.Methods.TryGetValue(name, out var im))
+                    return (FormatMember(result, ift.Name, name, im, isMethodLike: true),
+                        null, workspace.FormatTypeReferencesLine(result, im.ID));
+                if (cur.Fields.TryGetValue(name, out var f))
+                    return ($"(field) {ift.Name}.{name}: {workspace.FormatType(result.Types, f.Type)}",
+                        null, workspace.FormatTypeReferencesLine(result, f.Type.ID));
+                foreach (var b in cur.BaseInterfaces) queue.Enqueue(b);
+            }
+        }
+        else if (recvType is StructType st)
+        {
+            var field = st.Fields.FirstOrDefault(f => f.Name.Name == name);
+            if (field != null)
+                return ($"(field) {name}: {workspace.FormatType(result.Types, field.Type)}",
+                    null, workspace.FormatTypeReferencesLine(result, field.Type.ID));
+        }
+
+        return (null, null, null);
+    }
+
+    private string FormatMember(AnalysisResult result, string ownerName, string memberName,
+        FunctionType ft, bool isMethodLike, bool isStatic = false)
+    {
+        var prefix = isStatic ? "static " : "";
+        var parts = new List<string>();
+        // Class instance methods include a synthetic `self` first parameter
+        // that lives in the FunctionType but is never written at the call
+        // site; skip it when rendering so the hover matches what the user
+        // actually types.
+        var skipFirst = !isStatic && ft.ParamTypes.Count > 0 && ft.ParamNames.Count > 0
+            && ft.ParamNames[0] == "self";
+        for (var i = skipFirst ? 1 : 0; i < ft.ParamTypes.Count; i++)
+        {
+            var pName = i < ft.ParamNames.Count ? ft.ParamNames[i] : $"arg{i}";
+            var pType = workspace.FormatType(result.Types, ft.ParamTypes[i]);
+            var part = $"{pName}: {pType}";
+            if (ft.DefaultParams.Contains(i)) part += " = ...";
+            parts.Add(part);
+        }
+        if (ft.IsVararg)
+        {
+            var vaType = ft.VarargType != null ? workspace.FormatType(result.Types, ft.VarargType) : "any";
+            parts.Add($"...: {vaType}");
+        }
+        var ret = workspace.FormatType(result.Types, ft.ReturnType);
+        var sep = isMethodLike && !isStatic ? ":" : ".";
+        return $"({prefix}method) {ownerName}{sep}{memberName}({string.Join(", ", parts)}) -> {ret}";
     }
 
     private static Annotation? FindAnnotationAt(IRScript hir, int line, int col)
