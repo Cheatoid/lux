@@ -1447,11 +1447,18 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
                 var isClassRef = dot.Object is NameExpr cre
                     && pc.Pkg!.Syms.GetByID(cre.Name.Sym, out var cSym)
                     && cSym.Kind == SymbolKind.Class;
-                if (isClassRef && ct.StaticMethods.TryGetValue(fname, out var staticFirst))
+                if (isClassRef)
                 {
-                    resultType = staticFirst.ID;
+                    for (var cur = ct; cur != null; cur = cur.BaseClass)
+                    {
+                        if (cur.StaticMethods.TryGetValue(fname, out var sm))
+                        {
+                            resultType = sm.ID;
+                            goto classDotDone;
+                        }
+                    }
                 }
-                else if (ct.InstanceFields.TryGetValue(fname, out var field))
+                if (ct.InstanceFields.TryGetValue(fname, out var field))
                 {
                     CheckProtectedAccess(pc, dot.FieldName.Span, ct, fname);
                     resultType = field.Type.ID;
@@ -1478,10 +1485,12 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
                         if (cur.InstanceFields.TryGetValue(fname, out var pf)) { resultType = pf.Type.ID; found = true; }
                         else if (cur.Methods.TryGetValue(fname, out var pm)) { resultType = pm.ID; found = true; }
                         else if (cur.Getters.TryGetValue(fname, out var pg)) { resultType = pg.ReturnType.ID; found = true; }
+                        else if (cur.StaticMethods.TryGetValue(fname, out var psm)) { resultType = psm.ID; found = true; }
                         cur = cur.BaseClass;
                     }
                     if (!found) resultType = pc.Types.PrimAny.ID;
                 }
+                classDotDone:
                 break;
             }
             case { Kind: TypeKind.PrimitiveAny }:
