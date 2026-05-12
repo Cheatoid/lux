@@ -153,8 +153,12 @@ internal partial class IRVisitor
     private (List<Stmt> body, ReturnStmt? ret) VisitBlockContent(LuxParser.BlockContext ctx)
     {
         var stmts = new List<Stmt>();
-        foreach (var stmt in ctx.stmt())
+        if (ctx == null) return (stmts, null);
+        var stmtCtxs = ctx.stmt();
+        if (stmtCtxs == null) return (stmts, null);
+        foreach (var stmt in stmtCtxs)
         {
+            if (stmt == null) continue;
             var node = Visit(stmt);
             if (node is Stmt s) stmts.Add(s);
         }

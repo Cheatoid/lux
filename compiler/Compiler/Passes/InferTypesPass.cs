@@ -156,6 +156,7 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
 
     private void ResolveStmt(PassContext pc, Stmt stmt)
     {
+        if (stmt == null) return;
         switch (stmt)
         {
             case Decl decl:
@@ -890,6 +891,10 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
     private TypID SynthesizeExpr(PassContext pc, Expr expr)
     {
         var tt = pc.Types;
+        // Same defensive guard the earlier passes use — parser-recovery may
+        // have left a nested expression slot null; return the any-type so
+        // downstream consumers don't crash on a missing inferred type.
+        if (expr == null) return tt.PrimAny.ID;
         TypID result;
 
         switch (expr)

@@ -222,6 +222,7 @@ public class ResolveTypeRefsPass() : Pass(PassName, PassScope.PerBuild)
     
     private void ResolveStmtTypes(TypeTable tt, Stmt stmt)
     {
+        if (stmt == null) return;
         switch (stmt)
         {
             case Decl decl:
@@ -520,6 +521,7 @@ public class ResolveTypeRefsPass() : Pass(PassName, PassScope.PerBuild)
 
     private void ResolveExprTypes(TypeTable tt, Expr expr)
     {
+        if (expr == null) return;
         switch (expr)
         {
             case NilLiteralExpr:

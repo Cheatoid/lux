@@ -39,6 +39,7 @@ public sealed class ResolveNamesPass() : Pass(PassName, PassScope.PerFile)
 
     private void ResolveStmtNames(PassContext pc, Stmt stmt, PackageContext pkg)
     {
+        if (stmt == null) return;
         switch (stmt)
         {
             case Decl decl:
@@ -361,6 +362,9 @@ public sealed class ResolveNamesPass() : Pass(PassName, PassScope.PerFile)
 
     private void ResolveExprNames(PassContext pc, Expr expr, PackageContext pkg)
     {
+        // Same defensive guard as ResolveStmtNames — parser recovery may have
+        // left expression slots null inside a partial IR tree.
+        if (expr == null) return;
         switch (expr)
         {
             case NilLiteralExpr:

@@ -57,6 +57,30 @@ public sealed class CodeSection
 
     public List<string> Libs { get; set; } = [];
 
+    /// <summary>
+    /// Module paths that are implicitly namespace-imported at the top of every
+    /// source file. Each entry becomes <c>import * as &lt;ns&gt; from "&lt;entry&gt;"</c>,
+    /// where the namespace name is derived from the path: the last segment, or
+    /// the parent segment if the last is <c>Index</c>. Mirrors the
+    /// "shared globals everywhere" pattern of runtimes that auto-load a
+    /// shared module on every side (nanos-world's <c>Shared/Index.lua</c>).
+    /// Files matching an auto-import entry don't get their own import (no
+    /// self-reference cycles).
+    /// </summary>
+    public List<string> AutoImports { get; set; } = [];
+
+    /// <summary>
+    /// When false, auto-imports are visible to the compiler / LSP for name
+    /// resolution and type checking, but the <c>require(...)</c> call is
+    /// <em>not</em> emitted into the lowered Lua. Use this when the host
+    /// runtime pre-loads the module itself (e.g. nanos-world loads
+    /// <c>Shared/Index.lua</c> on every side before any other script
+    /// runs — emitting our own <c>Package.Require</c> would re-execute it).
+    /// Default <c>true</c>: emit a real require so plain Lua projects keep
+    /// working.
+    /// </summary>
+    public bool AutoImportsEmit { get; set; } = true;
+
     internal void Merge(CodeSection section)
     {
         IndexBase = Config.MergeVal(IndexBase, section.IndexBase, 0);
@@ -68,5 +92,7 @@ public sealed class CodeSection
         ImportExtension = Config.MergeVal(ImportExtension, section.ImportExtension, "");
         StripUnused = Config.MergeVal(StripUnused, section.StripUnused, true);
         if (section.Libs.Count > 0) Libs = section.Libs;
+        if (section.AutoImports.Count > 0) AutoImports = section.AutoImports;
+        AutoImportsEmit = Config.MergeVal(AutoImportsEmit, section.AutoImportsEmit, true);
     }
 }

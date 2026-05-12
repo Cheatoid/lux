@@ -1300,6 +1300,8 @@ public sealed class CodegenPass() : Pass(PassName, PassScope.PerBuild, true)
 
     private void EmitImport(PassContext ctx, PackageContext pkg, LuaGenerator gen, ImportStmt import)
     {
+        if (import.IsTypeOnly) return;
+
         var modExpr = gen.EmitImport(import.Module.Name);
 
         switch (import.Kind)

@@ -34,6 +34,16 @@ Animal.create("Buddy")            -- static method (dot syntax)
 
 `new Animal(args)` compiles to `Animal.new(args)`.
 
+> **Always use `new` for construction.** Lux requires `new ClassName(args)` to
+> create an instance &mdash; even when the underlying runtime expects a
+> different call shape (e.g. `ClassName(args)` without a method qualifier).
+> The [`@overrideCtor`](19-annotations.md#compiler-builtins) builtin rewrites
+> the **codegen** to match the runtime's convention, but the **source** must
+> still write `new`. A bare `ClassName(args)` is parsed as a function call
+> and rejected by the type checker (`expected 'function', but got 'class<…>'`).
+> This makes the constructor call site visually distinct from every other
+> function call and keeps the parser unambiguous.
+
 ### Lua Output
 
 ```lua

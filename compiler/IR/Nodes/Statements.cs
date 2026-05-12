@@ -124,6 +124,15 @@ public sealed class ImportStmt(NodeID id, TextSpan span, ImportKind kind, NameRe
     public NameRef Module { get; } = module;
     public List<ImportSpecifier> Specifiers { get; init; } = [];
     public NameRef? Alias { get; init; }
+
+    /// <summary>
+    /// True when this import was injected by <c>[code] auto_imports</c> with
+    /// <c>auto_imports_emit = false</c>. Name resolution still sees the
+    /// binding but <see cref="Passes.CodegenPass"/> skips the <c>require</c>
+    /// call so the host runtime (which already pre-loaded the module) doesn't
+    /// re-execute it.
+    /// </summary>
+    public bool IsTypeOnly { get; init; }
 }
 
 public sealed class ExportStmt(NodeID id, TextSpan span, Decl declaration) : Stmt(id, span)
