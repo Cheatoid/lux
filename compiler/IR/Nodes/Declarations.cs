@@ -64,6 +64,7 @@ public sealed class DeclareFunctionDecl(
     public TypeRef? ReturnType { get; } = returnType;
     public bool IsAsync { get; } = isAsync;
     public List<TypeParamDef> TypeParams { get; set; } = [];
+    public List<Annotation> Annotations { get; set; } = [];
 }
 
 public sealed class DeclareVariableDecl(
@@ -73,6 +74,7 @@ public sealed class DeclareVariableDecl(
 {
     public NameRef Name { get; } = name;
     public TypeRef TypeAnnotation { get; } = typeAnnotation;
+    public List<Annotation> Annotations { get; set; } = [];
 }
 
 public sealed class DeclareModuleDecl(
@@ -82,6 +84,7 @@ public sealed class DeclareModuleDecl(
 {
     public NameRef ModuleName { get; } = moduleName;
     public List<Decl> Members { get; } = members;
+    public List<Annotation> Annotations { get; set; } = [];
 }
 
 public sealed class EnumDecl(

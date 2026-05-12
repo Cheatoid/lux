@@ -126,6 +126,7 @@ public sealed class ApplyAnnotationsPass()
 
         foreach (var ann in annotations)
         {
+            if (BuiltinAnnotations.IsBuiltin(ann.Name.Name)) continue;
             if (!registry.TryGet(ann.Name.Name, out var def))
             {
                 ctx.Diag.Report(ann.Span, DiagnosticCode.ErrUnknownAnnotation, ann.Name.Name);
@@ -279,6 +280,11 @@ public sealed class ApplyAnnotationsPass()
 
             foreach (var ann in annsCopy)
             {
+                if (BuiltinAnnotations.IsBuiltin(ann.Name.Name))
+                {
+                    anns.Add(ann);
+                    continue;
+                }
                 if (!registry.TryGet(ann.Name.Name, out var def))
                 {
                     ctx.Diag.Report(ann.Span, DiagnosticCode.ErrUnknownAnnotation, ann.Name.Name);
@@ -394,6 +400,11 @@ public sealed class ApplyAnnotationsPass()
 
         foreach (var ann in annsCopy)
         {
+            if (BuiltinAnnotations.IsBuiltin(ann.Name.Name))
+            {
+                annotations.Add(ann);
+                continue;
+            }
             if (!registry.TryGet(ann.Name.Name, out var def))
             {
                 ctx.Diag.Report(ann.Span, DiagnosticCode.ErrUnknownAnnotation, ann.Name.Name);
@@ -444,6 +455,11 @@ public sealed class ApplyAnnotationsPass()
 
             foreach (var ann in annsCopy)
             {
+                if (BuiltinAnnotations.IsBuiltin(ann.Name.Name))
+                {
+                    param.Annotations.Add(ann);
+                    continue;
+                }
                 if (!registry.TryGet(ann.Name.Name, out var def))
                 {
                     ctx.Diag.Report(ann.Span, DiagnosticCode.ErrUnknownAnnotation, ann.Name.Name);
@@ -504,12 +520,12 @@ public sealed class ApplyAnnotationsPass()
     {
         switch (decl)
         {
-            case FunctionDecl fd: fd.Annotations = []; break;
-            case LocalFunctionDecl lfd: lfd.Annotations = []; break;
-            case LocalDecl ld: ld.Annotations = []; break;
-            case ClassDecl cd: cd.Annotations = []; break;
-            case EnumDecl ed: ed.Annotations = []; break;
-            case InterfaceDecl id: id.Annotations = []; break;
+            case FunctionDecl fd: fd.Annotations = BuiltinAnnotations.KeepBuiltins(fd.Annotations); break;
+            case LocalFunctionDecl lfd: lfd.Annotations = BuiltinAnnotations.KeepBuiltins(lfd.Annotations); break;
+            case LocalDecl ld: ld.Annotations = BuiltinAnnotations.KeepBuiltins(ld.Annotations); break;
+            case ClassDecl cd: cd.Annotations = BuiltinAnnotations.KeepBuiltins(cd.Annotations); break;
+            case EnumDecl ed: ed.Annotations = BuiltinAnnotations.KeepBuiltins(ed.Annotations); break;
+            case InterfaceDecl id: id.Annotations = BuiltinAnnotations.KeepBuiltins(id.Annotations); break;
         }
     }
 

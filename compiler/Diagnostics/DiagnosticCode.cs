@@ -404,4 +404,18 @@ public enum DiagnosticCode
     ErrAnnotationArgTypeMismatch = 0x500E,
 
     #endregion
+
+    #region Sides
+
+    [Level(DiagnosticLevel.Error)]
+    [Category(DiagnosticCategory.Semantic)]
+    [Format("Unknown side '{0}' — expected one of: client, server, shared")]
+    ErrUnknownSideName = 0x6001,
+
+    [Level(DiagnosticLevel.Error)]
+    [Category(DiagnosticCategory.Semantic)]
+    [Format("Symbol '{0}' is {1}-side only and cannot be used in this {2}-side file")]
+    ErrSymbolWrongSide = 0x6002,
+
+    #endregion
 }

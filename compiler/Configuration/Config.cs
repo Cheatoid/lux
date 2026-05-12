@@ -108,6 +108,15 @@ public sealed class Config
     public TestSection Test { get; set; } = new();
 
     /// <summary>
+    /// Glob → side-name-list mapping that restricts which symbols (annotated
+    /// with <c>@side(...)</c>) each source file may reach. Files outside any
+    /// glob inherit <see cref="Side.All"/> so the feature is opt-in per
+    /// project. Keys are glob patterns like <c>"src/Client/**"</c>; values are
+    /// lists of side names (<c>client</c>, <c>server</c>, <c>shared</c>).
+    /// </summary>
+    public Dictionary<string, List<string>> Sides { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
     /// When true, undeclared identifiers are silently treated as <c>any</c>-typed
     /// globals so a fresh per-input compilation in <c>lux repl</c> can still reach
     /// state from earlier inputs (whose locals/declarations did not survive). Never
@@ -176,6 +185,8 @@ public sealed class Config
         Install.Merge(config.Install);
         Stdlib.Merge(config.Stdlib);
         Test.Merge(config.Test);
+        foreach (var kv in config.Sides)
+            Sides.TryAdd(kv.Key, kv.Value);
         foreach (var kv in config.Dependencies)
             Dependencies.TryAdd(kv.Key, kv.Value);
         foreach (var kv in config.DevDependencies)
@@ -267,6 +278,7 @@ public sealed class Config
             Install = Install,
             Stdlib = Stdlib,
             Test = Test,
+            Sides = new Dictionary<string, List<string>>(Sides, StringComparer.OrdinalIgnoreCase),
             Dependencies = new Dictionary<string, object>(Dependencies),
             DevDependencies = new Dictionary<string, object>(DevDependencies),
             PeerDependencies = new Dictionary<string, object>(PeerDependencies)

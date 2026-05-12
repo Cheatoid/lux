@@ -36,7 +36,31 @@ internal partial class IRVisitor
     }
 
     public override Node VisitDeclareStat(LuxParser.DeclareStatContext context)
-        => Visit(context.declareBody());
+    {
+        var annotations = VisitAnnotationListContent(context.annotationList());
+        var body = (Decl)Visit(context.declareBody());
+        if (annotations.Count > 0) AttachAnnotations(body, annotations);
+        return body;
+    }
+
+    /// <summary>
+    /// Routes annotations parsed on a <c>declare ...</c> statement onto the
+    /// concrete decl node. <c>declareBody</c> alternatives produce different
+    /// concrete types (function / variable / module / class / interface /
+    /// enum) and we want the annotations to live on whichever one came back.
+    /// </summary>
+    private static void AttachAnnotations(Decl decl, List<Annotation> annotations)
+    {
+        switch (decl)
+        {
+            case DeclareFunctionDecl df: df.Annotations = annotations; break;
+            case DeclareVariableDecl dv: dv.Annotations = annotations; break;
+            case DeclareModuleDecl dm: dm.Annotations = annotations; break;
+            case ClassDecl cd: cd.Annotations = annotations; break;
+            case InterfaceDecl id: id.Annotations = annotations; break;
+            case EnumDecl ed: ed.Annotations = annotations; break;
+        }
+    }
 
     public override Node VisitDeclareFunction(LuxParser.DeclareFunctionContext context)
     {
@@ -74,13 +98,16 @@ internal partial class IRVisitor
         var typeParams = VisitTypeParamListContent(context.funcSignature().typeParamList());
         var decl = new DeclareFunctionDecl(NewNodeID, SpanFromCtx(context), namePath, methodName, parameters, returnType, isAsync);
         decl.TypeParams = typeParams;
+        decl.Annotations = VisitAnnotationListContent(context.annotationList());
         return decl;
     }
 
     public override Node VisitModuleDeclareVariable(LuxParser.ModuleDeclareVariableContext context)
     {
         var typeRef = (TypeRef)Visit(context.typeAnnotation().typeExpr());
-        return new DeclareVariableDecl(NewNodeID, SpanFromCtx(context), NameRefFromTerm(context.NAME()), typeRef);
+        var decl = new DeclareVariableDecl(NewNodeID, SpanFromCtx(context), NameRefFromTerm(context.NAME()), typeRef);
+        decl.Annotations = VisitAnnotationListContent(context.annotationList());
+        return decl;
     }
 
     public override Node VisitEnumDecl(LuxParser.EnumDeclContext context)
@@ -127,7 +154,9 @@ internal partial class IRVisitor
                 : null;
             members.Add(new EnumMember(memberName, null, typeAnn, SpanFromCtx(memberCtx)));
         }
-        return new EnumDecl(NewNodeID, SpanFromCtx(context), name, members, isDeclare: true);
+        var ed = new EnumDecl(NewNodeID, SpanFromCtx(context), name, members, isDeclare: true);
+        ed.Annotations = VisitAnnotationListContent(context.annotationList());
+        return ed;
     }
 
     public override Node VisitDeclareClass(LuxParser.DeclareClassContext context)
@@ -406,6 +435,7 @@ internal partial class IRVisitor
         declMod.TypeParams = typeParams;
         declMod.BaseClassTypeArgs = baseClassTypeArgs;
         declMod.InterfaceTypeArgs = interfaceTypeArgs;
+        declMod.Annotations = VisitAnnotationListContent(context.annotationList());
         return declMod;
     }
 
@@ -459,6 +489,7 @@ internal partial class IRVisitor
         var ifaceModDecl = new InterfaceDecl(NewNodeID, SpanFromCtx(context), name, baseInterfaces, fields, methods, isDeclare: true);
         ifaceModDecl.TypeParams = typeParams;
         ifaceModDecl.BaseInterfaceTypeArgs = baseInterfaceTypeArgs;
+        ifaceModDecl.Annotations = VisitAnnotationListContent(context.annotationList());
         return ifaceModDecl;
     }
 

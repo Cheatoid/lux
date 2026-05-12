@@ -404,7 +404,7 @@ matchPattern
 //   end
 
 declareStat
-    : DECLARE declareBody
+    : annotationList DECLARE declareBody
     ;
 
 declareBody
@@ -461,13 +461,13 @@ declareEnumMember
     ;
 
 declareModuleMember
-    : ASYNC? FUNCTION funcName funcSignature                     # ModuleDeclareFunction
-    | NAME typeAnnotation                                        # ModuleDeclareVariable
-    | ENUM NAME declareEnumMember+ END                           # ModuleDeclareEnum
-    | ABSTRACT? CLASS NAME typeParamList? (EXTENDS classRef)? (IMPLEMENTS classRef (COMMA classRef)*)?
+    : annotationList ASYNC? FUNCTION funcName funcSignature      # ModuleDeclareFunction
+    | annotationList NAME typeAnnotation                         # ModuleDeclareVariable
+    | annotationList ENUM NAME declareEnumMember+ END            # ModuleDeclareEnum
+    | annotationList ABSTRACT? CLASS NAME typeParamList? (EXTENDS classRef)? (IMPLEMENTS classRef (COMMA classRef)*)?
       declareClassMember*
       END                                                        # ModuleDeclareClass
-    | INTERFACE NAME typeParamList? (EXTENDS classRef (COMMA classRef)*)?
+    | annotationList INTERFACE NAME typeParamList? (EXTENDS classRef (COMMA classRef)*)?
       interfaceMember*
       END                                                        # ModuleDeclareInterface
     ;

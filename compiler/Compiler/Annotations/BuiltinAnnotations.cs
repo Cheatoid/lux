@@ -1,0 +1,91 @@
+using Lux.Configuration;
+using Lux.IR;
+
+namespace Lux.Compiler.Annotations;
+
+/// <summary>
+/// Built-in compiler annotations that bypass the user-script
+/// <see cref="AnnotationRegistry"/> pipeline. These are recognised by name
+/// and consumed directly by specific compiler passes — they do not require
+/// an annotation definition file and are not invoked at runtime.
+/// </summary>
+public static class BuiltinAnnotations
+{
+    public const string Side = "side";
+
+    private static readonly HashSet<string> Names = new(StringComparer.Ordinal) { Side };
+
+    public static bool IsBuiltin(string name) => Names.Contains(name);
+
+    /// <summary>
+    /// Filters the given annotation list down to the subset of builtin
+    /// annotations. Used by <see cref="Passes.ApplyAnnotationsPass"/> to
+    /// preserve builtin annotations on the decl after user-script
+    /// annotations have been processed and cleared.
+    /// </summary>
+    public static List<Annotation> KeepBuiltins(List<Annotation> annotations)
+    {
+        if (annotations.Count == 0) return annotations;
+        var kept = new List<Annotation>();
+        foreach (var ann in annotations)
+            if (IsBuiltin(ann.Name.Name)) kept.Add(ann);
+        return kept;
+    }
+
+    /// <summary>
+    /// Extracts the <see cref="Side"/> mask from <c>@side(client, server, ...)</c>
+    /// annotations on a decl. Returns <see cref="Configuration.Side.All"/>
+    /// when no <c>@side</c> annotation is present (the unannotated default —
+    /// "available everywhere"). Diagnostics for unknown side names are
+    /// emitted by the caller via the <paramref name="onUnknownName"/> hook so
+    /// this helper stays free of <see cref="Diagnostics.DiagnosticsBag"/>
+    /// dependencies.
+    /// </summary>
+    public static Side ExtractSide(List<Annotation> annotations, Action<Annotation, string>? onUnknownName = null)
+    {
+        if (annotations == null || annotations.Count == 0) return Configuration.Side.All;
+        var found = Configuration.Side.None;
+        var anyFound = false;
+        foreach (var ann in annotations)
+        {
+            if (ann.Name.Name != Side) continue;
+            anyFound = true;
+
+            if (ann.Args.Count == 0)
+            {
+                onUnknownName?.Invoke(ann, "");
+                continue;
+            }
+
+            foreach (var arg in ann.Args)
+            {
+                var name = ExtractNameLiteral(arg.Value);
+                if (name == null)
+                {
+                    onUnknownName?.Invoke(ann, "<non-literal>");
+                    continue;
+                }
+
+                var parsed = SideExtensions.ParseSideName(name);
+                if (parsed == Configuration.Side.None)
+                {
+                    onUnknownName?.Invoke(ann, name);
+                    continue;
+                }
+
+                found |= parsed;
+            }
+        }
+
+        if (!anyFound) return Configuration.Side.All;
+        return found == Configuration.Side.None ? Configuration.Side.All : found;
+    }
+
+    private static string? ExtractNameLiteral(Expr expr) => expr switch
+    {
+        NameExpr ne => ne.Name.Name,
+        StringLiteralExpr s => s.Value,
+        DotAccessExpr { Object: NameExpr } dot => dot.FieldName.Name,
+        _ => null,
+    };
+}

@@ -331,6 +331,7 @@ public sealed class ResolveImportsPass() : Pass(PassName, PassScope.PerBuild)
         if (!tgtPkg.Syms.GetByID(target, out var tgtSym)) return;
         if (srcSym.Type != TypID.Invalid)
             tgtSym.Type = srcSym.Type;
+        tgtSym.Side = srcSym.Side;
     }
 
     private static void CopySymbolType(PackageContext pkg, SymID source, SymID target)

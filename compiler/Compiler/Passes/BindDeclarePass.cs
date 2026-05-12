@@ -1,3 +1,5 @@
+using Lux.Compiler.Annotations;
+using Lux.Configuration;
 using Lux.Diagnostics;
 using Lux.IR;
 
@@ -283,6 +285,7 @@ public sealed class BindDeclarePass() : Pass(PassName, PassScope.PerFile)
                         DeclareSymbol(ctx, scope, funcDecl.NamePath[0].Name, SymbolKind.Function, funcDecl.ID, funcDecl.NamePath[0].Span, SymbolFlags.Async);
                     else
                         DeclareSymbol(ctx, scope, funcDecl.NamePath[0].Name, SymbolKind.Function, funcDecl.ID, funcDecl.NamePath[0].Span);
+                    StampSide(ctx, scope, funcDecl.NamePath[0].Name, funcDecl.Annotations);
                 }
 
                 var funcScope = pkg.Scopes.NewScope(scope);
@@ -322,6 +325,7 @@ public sealed class BindDeclarePass() : Pass(PassName, PassScope.PerFile)
                     DeclareSymbol(ctx, scope, localFuncDecl.Name.Name, SymbolKind.Function, localFuncDecl.ID, localFuncDecl.Name.Span, SymbolFlags.Async);
                 else
                     DeclareSymbol(ctx, scope, localFuncDecl.Name.Name, SymbolKind.Function, localFuncDecl.ID, localFuncDecl.Name.Span);
+                StampSide(ctx, scope, localFuncDecl.Name.Name, localFuncDecl.Annotations);
 
                 var localFuncScope = pkg.Scopes.NewScope(scope);
                 pkg.Scopes.BindNode(localFuncDecl.ID, localFuncScope);
@@ -386,6 +390,7 @@ public sealed class BindDeclarePass() : Pass(PassName, PassScope.PerFile)
                         flags.Add(SymbolFlags.Const);
 
                     DeclareSymbol(ctx, scope, variable.Name.Name, SymbolKind.Variable, localDecl.ID, variable.Name.Span, flags.ToArray());
+                    StampSide(ctx, scope, variable.Name.Name, localDecl.Annotations);
                 }
 
                 return true;
@@ -398,6 +403,7 @@ public sealed class BindDeclarePass() : Pass(PassName, PassScope.PerFile)
                         DeclareSymbol(ctx, scope, declareFuncDecl.NamePath[0].Name, SymbolKind.Function, declareFuncDecl.ID, declareFuncDecl.NamePath[0].Span, SymbolFlags.Async);
                     else
                         DeclareSymbol(ctx, scope, declareFuncDecl.NamePath[0].Name, SymbolKind.Function, declareFuncDecl.ID, declareFuncDecl.NamePath[0].Span);
+                    StampSide(ctx, scope, declareFuncDecl.NamePath[0].Name, declareFuncDecl.Annotations);
                 }
 
                 var declareFuncScope = pkg.Scopes.NewScope(scope);
@@ -419,12 +425,14 @@ public sealed class BindDeclarePass() : Pass(PassName, PassScope.PerFile)
             case DeclareVariableDecl declareVarDecl:
             {
                 DeclareSymbol(ctx, scope, declareVarDecl.Name.Name, SymbolKind.Variable, declareVarDecl.ID, declareVarDecl.Name.Span);
+                StampSide(ctx, scope, declareVarDecl.Name.Name, declareVarDecl.Annotations);
                 pkg.Scopes.BindNode(declareVarDecl.ID, scope);
                 return true;
             }
             case DeclareModuleDecl declareModuleDecl:
             {
                 DeclareSymbol(ctx, scope, declareModuleDecl.ModuleName.Name, SymbolKind.Variable, declareModuleDecl.ID, declareModuleDecl.ModuleName.Span);
+                StampSide(ctx, scope, declareModuleDecl.ModuleName.Name, declareModuleDecl.Annotations);
                 var moduleScope = pkg.Scopes.NewScope(scope);
                 pkg.Scopes.BindNode(declareModuleDecl.ID, moduleScope);
 
@@ -441,6 +449,7 @@ public sealed class BindDeclarePass() : Pass(PassName, PassScope.PerFile)
             case EnumDecl enumDecl:
             {
                 DeclareSymbol(ctx, scope, enumDecl.Name.Name, SymbolKind.Enum, enumDecl.ID, enumDecl.Name.Span);
+                StampSide(ctx, scope, enumDecl.Name.Name, enumDecl.Annotations);
                 pkg.Scopes.BindNode(enumDecl.ID, scope);
                 foreach (var member in enumDecl.Members)
                 {
@@ -454,6 +463,7 @@ public sealed class BindDeclarePass() : Pass(PassName, PassScope.PerFile)
             case ClassDecl classDecl:
             {
                 DeclareSymbol(ctx, scope, classDecl.Name.Name, SymbolKind.Class, classDecl.ID, classDecl.Name.Span);
+                StampSide(ctx, scope, classDecl.Name.Name, classDecl.Annotations);
                 var classScope = pkg.Scopes.NewScope(scope);
                 pkg.Scopes.BindNode(classDecl.ID, classScope);
                 DeclareTypeParams(ctx, classScope, classDecl.TypeParams);
@@ -521,6 +531,7 @@ public sealed class BindDeclarePass() : Pass(PassName, PassScope.PerFile)
             case InterfaceDecl interfaceDecl:
             {
                 DeclareSymbol(ctx, scope, interfaceDecl.Name.Name, SymbolKind.Interface, interfaceDecl.ID, interfaceDecl.Name.Span);
+                StampSide(ctx, scope, interfaceDecl.Name.Name, interfaceDecl.Annotations);
                 var ifaceScope = pkg.Scopes.NewScope(scope);
                 pkg.Scopes.BindNode(interfaceDecl.ID, ifaceScope);
                 DeclareTypeParams(ctx, ifaceScope, interfaceDecl.TypeParams);
@@ -737,6 +748,25 @@ public sealed class BindDeclarePass() : Pass(PassName, PassScope.PerFile)
         var pkg = ctx.Pkg!;
         var symId = pkg.Syms.NewSymbol(kind, name, scope, TypID.Invalid, decl, flags);
         pkg.Scopes.DeclareSymbol(scope, name, symId, pkg.Syms, span);
+    }
+
+    /// <summary>
+    /// Reads <c>@side(...)</c> annotations off a declaration and stamps the
+    /// resolved <see cref="Side"/> mask on the symbol just declared in
+    /// <paramref name="scope"/>. Falls back to <see cref="Side.All"/> when
+    /// unannotated, so unmarked decls remain accessible everywhere.
+    /// </summary>
+    private static void StampSide(PassContext ctx, ScopeID scope, string name, List<Annotation> annotations)
+    {
+        if (annotations == null || annotations.Count == 0) return;
+        var pkg = ctx.Pkg!;
+        if (!pkg.Scopes.LookupOnlyCurrent(scope, name, out var symId)) return;
+        if (!pkg.Syms.GetByID(symId, out var sym)) return;
+        sym.Side = BuiltinAnnotations.ExtractSide(annotations, (ann, badName) =>
+        {
+            if (!string.IsNullOrEmpty(badName))
+                ctx.Diag.Report(ann.Span, DiagnosticCode.ErrUnknownSideName, badName);
+        });
     }
 
     private static void DeclareTypeParams(PassContext ctx, ScopeID scope, List<TypeParamDef> typeParams)

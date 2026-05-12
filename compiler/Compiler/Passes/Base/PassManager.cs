@@ -21,6 +21,7 @@ public sealed class PassManager
         ResolveImportsPass.PassName,
         ResolveNamesPass.PassName,
         ResolveTypeRefsPass.PassName,
+        CheckSidesPass.PassName,
         CheckImmutabilityPass.PassName,
         InferTypesPass.PassName,
         ValidateGenericConstraintsPass.PassName,
@@ -42,6 +43,7 @@ public sealed class PassManager
         ResolveImportsPass.PassName,
         ResolveNamesPass.PassName,
         ResolveTypeRefsPass.PassName,
+        CheckSidesPass.PassName,
         CheckImmutabilityPass.PassName,
         InferTypesPass.PassName,
         ValidateGenericConstraintsPass.PassName,
@@ -53,6 +55,7 @@ public sealed class PassManager
         BindDeclarePass.PassName,
         ResolveNamesPass.PassName,
         ResolveTypeRefsPass.PassName,
+        CheckSidesPass.PassName,
         CheckImmutabilityPass.PassName,
         InferTypesPass.PassName,
         ValidateGenericConstraintsPass.PassName,
@@ -67,6 +70,7 @@ public sealed class PassManager
 
     public static readonly string[] SingleFilePhase2 = [
         ResolveTypeRefsPass.PassName,
+        CheckSidesPass.PassName,
         CheckImmutabilityPass.PassName,
         InferTypesPass.PassName,
         ValidateGenericConstraintsPass.PassName,
@@ -100,6 +104,7 @@ public sealed class PassManager
         Register(new ResolveImportsPass());
         Register(new ResolveNamesPass());
         Register(new ResolveTypeRefsPass());
+        Register(new CheckSidesPass());
         Register(new CheckImmutabilityPass());
         Register(new InferTypesPass());
         Register(new ValidateGenericConstraintsPass());

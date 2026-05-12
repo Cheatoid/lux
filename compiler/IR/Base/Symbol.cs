@@ -1,4 +1,6 @@
-﻿namespace Lux.IR;
+﻿using Lux.Configuration;
+
+namespace Lux.IR;
 
 /// <summary>
 /// Represents the kind of symbol. This enum is used to distinguish between different kinds of symbols and to determine
@@ -98,6 +100,14 @@ public sealed class Symbol(SymID id, SymbolKind kind, string name, ScopeID owner
     /// The flags of the symbol. This is used to indicate additional properties of the symbol.
     /// </summary>
     public SymbolFlags Flags { get; set; } = flags;
+
+    /// <summary>
+    /// The execution-side mask of the symbol (Client/Server/Shared). Set by
+    /// <see cref="Compiler.Passes.BindDeclarePass"/> from the symbol's
+    /// <c>@side(...)</c> annotation, defaulting to <see cref="Side.All"/> if
+    /// unannotated.
+    /// </summary>
+    public Side Side { get; set; } = Side.All;
 }
 
 /// <summary>

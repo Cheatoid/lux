@@ -32,3 +32,4 @@ Lux is a typed superset of Lua. It adds optional type annotations, an ES-style m
 21. [Testing](21-testing.md) — Writing tests with the built-in `lux:test` framework, running via `lux test`
 22. [REPL](22-repl.md) — Interactive Lux sessions
 23. [Standalone Binaries](23-compiling.md) — Bundling a project into a single native executable via `lux compile`
+24. [Sides (Client / Server / Shared)](24-sides.md) — Multiplayer-sandbox style execution-side scoping for `.d.lux` types via `@side(...)` annotations + project glob mapping
