@@ -80,6 +80,20 @@ public sealed class Project
     }
 
     /// <summary>
+    /// Returns the absolute path of the process's current working directory.
+    /// Setup scripts should prefer this over <c>os.getenv("PWD")</c>, which
+    /// reads the shell's PWD variable — that does NOT follow C#'s
+    /// <c>Environment.CurrentDirectory</c> change made by the create flow,
+    /// so it would point at the directory `lux create` was launched from
+    /// instead of the freshly-created target dir.
+    /// </summary>
+    [LuxExport("cwd")]
+    public static string Cwd()
+    {
+        return Environment.CurrentDirectory;
+    }
+
+    /// <summary>
     /// Runs a shell command in <paramref name="cwd"/> (or the current working directory
     /// if nil). Returns the exit code. Output is inherited so users see progress.
     /// </summary>

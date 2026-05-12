@@ -128,13 +128,20 @@ public sealed class GitFetcher
                 {
                     var targetPath = Path.Combine(destDir, Path.GetFileName(entry));
                     if (Directory.Exists(entry)) MoveDirectory(entry, targetPath);
-                    else File.Move(entry, targetPath, overwrite: true);
+                    else MoveOrCopyFile(entry, targetPath);
                 }
             }
             else
             {
-                Directory.Move(stageDir, destDir);
-                stageDir = null!;
+                try
+                {
+                    Directory.Move(stageDir, destDir);
+                    stageDir = null!;
+                }
+                catch (IOException)
+                {
+                    CopyDirectoryContents(stageDir, destDir);
+                }
             }
         }
         finally
@@ -177,8 +184,15 @@ public sealed class GitFetcher
     {
         if (!Directory.Exists(target))
         {
-            Directory.Move(source, target);
-            return;
+            try
+            {
+                Directory.Move(source, target);
+                return;
+            }
+            catch (IOException)
+            {
+                Directory.CreateDirectory(target);
+            }
         }
         foreach (var dir in Directory.GetDirectories(source))
         {
@@ -188,8 +202,34 @@ public sealed class GitFetcher
         foreach (var file in Directory.GetFiles(source))
         {
             var name = Path.GetFileName(file);
-            File.Move(file, Path.Combine(target, name), overwrite: true);
+            MoveOrCopyFile(file, Path.Combine(target, name));
         }
         try { Directory.Delete(source, recursive: false); } catch { }
+    }
+
+    private static void MoveOrCopyFile(string source, string target)
+    {
+        try
+        {
+            File.Move(source, target, overwrite: true);
+        }
+        catch (IOException)
+        {
+            File.Copy(source, target, overwrite: true);
+            try { File.Delete(source); } catch { }
+        }
+    }
+
+    private static void CopyDirectoryContents(string source, string target)
+    {
+        Directory.CreateDirectory(target);
+        foreach (var dir in Directory.GetDirectories(source))
+        {
+            CopyDirectoryContents(dir, Path.Combine(target, Path.GetFileName(dir)));
+        }
+        foreach (var file in Directory.GetFiles(source))
+        {
+            File.Copy(file, Path.Combine(target, Path.GetFileName(file)), overwrite: true);
+        }
     }
 }
