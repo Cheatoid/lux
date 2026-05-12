@@ -529,6 +529,7 @@ internal static class Program
         Console.WriteLine("                     Flags: --dev, --peer");
         Console.WriteLine("  remove <name>      Remove a declared dependency");
         Console.WriteLine("  pm prune [spec]    Wipe cached bare clones / snapshots so next install re-fetches");
+        Console.WriteLine("  pm update [name]   Re-resolve every (or one named) dependency against origin");
         Console.WriteLine("  pm refresh-registry  Refresh the cached alias registry index");
         Console.WriteLine("  docs               Generate documentation site (Markdown + HTML)");
         Console.WriteLine("                     Flags: --out <dir>, --no-html, --no-md");
@@ -1597,6 +1598,7 @@ internal static class Program
         return sub switch
         {
             "prune" => RunPmPrune(args.Skip(1).ToArray()),
+            "update" => await RunPmUpdate(args.Skip(1).ToArray()),
             "refresh-registry" => await RunPmRefreshRegistry(),
             _ => RunPmHelp(),
         };
@@ -1608,8 +1610,86 @@ internal static class Program
         Console.WriteLine("  lux pm prune                  Wipe ALL cached bare clones, snapshots and tmp staging.");
         Console.WriteLine("  lux pm prune <git-spec>       Wipe the bare clone + every cached snapshot for one repo");
         Console.WriteLine("                                (e.g. `lux pm prune github:LuaLux/nanos-world-types`).");
+        Console.WriteLine("  lux pm update                 Re-resolve every dependency against origin and rewrite the lockfile.");
+        Console.WriteLine("  lux pm update <name>          Re-resolve only the named dependency.");
         Console.WriteLine("  lux pm refresh-registry       Refresh the cached alias registry index.");
         return 0;
+    }
+
+    /// <summary>
+    /// Re-resolves dependencies against origin and rewrites the lockfile. With
+    /// no args it drops the entire lockfile so every dep gets re-resolved; with
+    /// a name it removes just that one entry before re-installing. Either way
+    /// the bare clone is refreshed (<see cref="PackageManager.GitFetcher.EnsureBareCloneAsync"/>
+    /// already runs <c>git fetch</c>) so floating refs (branch / wildcard tag)
+    /// pick up the latest commits.
+    /// </summary>
+    private static async Task<int> RunPmUpdate(string[] args)
+    {
+        var configPath = Path.Combine(Environment.CurrentDirectory, "lux.toml");
+        var config = Config.LoadFromFile(configPath);
+        if (config == null)
+        {
+            await Console.Error.WriteLineAsync("error: lux.toml not found in current directory. Run 'lux init' first.");
+            return 1;
+        }
+
+        var lockPath = Path.Combine(Environment.CurrentDirectory, "lux.lock");
+        var existing = Lockfile.Load(lockPath);
+
+        if (args.Length == 0)
+        {
+            if (existing != null && existing.Packages.Count > 0)
+            {
+                Console.WriteLine($"Dropping {existing.Packages.Count} lockfile entries — every dep will be re-resolved against origin.");
+                new Lockfile { Version = 1 }.Save(lockPath);
+            }
+            else
+            {
+                Console.WriteLine("No lockfile entries to drop — proceeding with fresh resolve.");
+            }
+        }
+        else
+        {
+            if (existing == null || existing.Packages.Count == 0)
+            {
+                Console.WriteLine("No lockfile to update — running install instead.");
+            }
+            else
+            {
+                var dropped = 0;
+                foreach (var name in args)
+                {
+                    var idx = existing.Packages.FindIndex(p => string.Equals(p.Name, name, StringComparison.Ordinal));
+                    if (idx >= 0)
+                    {
+                        existing.Packages.RemoveAt(idx);
+                        Console.WriteLine($"  unlocked '{name}'");
+                        dropped++;
+                    }
+                    else
+                    {
+                        Console.WriteLine($"  '{name}' not in lockfile — will resolve fresh");
+                    }
+                }
+                existing.Save(lockPath);
+                if (dropped == 0)
+                {
+                    Console.WriteLine("Nothing dropped; install will be a no-op unless a new dep is declared in lux.toml.");
+                }
+            }
+        }
+
+        var installer = new Installer();
+        return await installer.InstallAsync(config, Environment.CurrentDirectory, new InstallOptions
+        {
+            Frozen = false,
+            Offline = false,
+            IncludeDev = true,
+            NoRegistryCache = false,
+            AllowAllScripts = config.Install.AllowScripts,
+            AllowedScriptPackages = new HashSet<string>(StringComparer.Ordinal),
+        });
     }
 
     private static async Task<int> RunPmRefreshRegistry()

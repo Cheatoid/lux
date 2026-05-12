@@ -236,6 +236,9 @@ public sealed class LuaGenerator(Config config)
 
     public string EmitImport(string modulePath)
     {
+        if (modulePath.EndsWith(".lux", StringComparison.OrdinalIgnoreCase))
+            modulePath = modulePath[..^4];
+        modulePath += config.Code.ImportExtension;
         var template = config.Code.ImportStatement;
         return template.Replace("%s", "\"" + modulePath + "\"");
     }

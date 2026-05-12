@@ -37,7 +37,17 @@ public sealed class CodeSection
     /// Sets the code of the import statement that is used by the transpiler. %s is replaced by the string to define the imported file.
     /// </summary>
     public string ImportStatement { get; set; } = "require(%s)";
-    
+
+    /// <summary>
+    /// Optional suffix appended to every <c>import</c> path before it is substituted
+    /// into <see cref="ImportStatement"/>. Lux always strips a trailing <c>.lux</c>
+    /// from the source path first — the writer-visible filename is never legal in
+    /// the lowered Lua. Set this to <c>".lua"</c> for runtimes whose loader
+    /// requires the extension (e.g. nanos-world's <c>Package.Require("Foo.lua")</c>).
+    /// Default is empty, which matches Lua's classic <c>require("foo")</c>.
+    /// </summary>
+    public string ImportExtension { get; set; } = "";
+
     /// <summary>
     /// Whether to strip unused variables, functions, and other declarations from the generated code. This can help to
     /// reduce the size of the generated code and improve performance, but it may also make debugging more difficult if
@@ -55,6 +65,7 @@ public sealed class CodeSection
         AltBooleanOperators = Config.MergeVal(AltBooleanOperators, section.AltBooleanOperators, false);
         Semicolons = Config.MergeVal(Semicolons, section.Semicolons, Policy.Optional);
         ImportStatement = Config.MergeVal(ImportStatement, section.ImportStatement, "require(%s)");
+        ImportExtension = Config.MergeVal(ImportExtension, section.ImportExtension, "");
         StripUnused = Config.MergeVal(StripUnused, section.StripUnused, true);
         if (section.Libs.Count > 0) Libs = section.Libs;
     }

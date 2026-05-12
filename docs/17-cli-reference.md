@@ -256,6 +256,17 @@ lux pm prune github:LuaLux/nanos-world-types        # wipe one repo's bare clone
 
 `lux pm prune` (no args) removes `~/.lux/cache/git`, `~/.lux/store` and `~/.lux/tmp`. With a git spec it removes only that repo's bare clone and every commit snapshot of it.
 
+## `lux pm update [<name>]`
+
+Re-resolves dependencies against origin and rewrites the lockfile. The bare clone is `git fetch`'d on every invocation, so any floating ref (default branch, semver range, mutable tag) picks up new commits. Pinned exact-commit specs end up at the same SHA.
+
+```bash
+lux pm update                          # re-resolve every dep
+lux pm update nanos-world-types        # re-resolve just one
+```
+
+`pm update` (no args) wipes the entire lockfile and re-resolves; `pm update <name>` drops only the named entry. Either way the install step that follows re-extracts snapshots and re-links `lux_modules/`. For *cache-corruption* scenarios (mis-named ref, force-pushed branch overwriting the bare clone), reach for `lux pm prune` instead.
+
 ## `lux pm refresh-registry`
 
 Re-downloads the alias registry index so name → git-URL lookups (`lux add cool-lib@v1`) see the latest published packages.

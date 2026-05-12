@@ -174,6 +174,7 @@ string_interpolation = true    # default true
 alt_boolean_operators = true   # default true
 semicolons = "optional"        # default "optional"
 import_statement = "require(%s)"  # default "require(%s)"
+import_extension = ""          # default ""
 strip_unused = true            # default true
 ```
 
@@ -195,8 +196,15 @@ strip_unused = true            # default true
   `"forbidden"`. Controls whether the generated Lua allows / requires / rejects
   trailing `;` on statements.
 - **`import_statement`** &mdash; pattern emitted for every Lux `import`.
-  `%s` is replaced with the module path string. Override to integrate
-  with a custom module loader (e.g. `"__require(%s)"`).
+  `%s` is replaced with the **quoted** module path string. Override to
+  integrate with a custom module loader (e.g. `"__require(%s)"` or
+  `'Package.Require(%s)'`).
+- **`import_extension`** &mdash; suffix appended to every import path
+  before it lands in the `%s` substitution. Lux *always* strips a
+  trailing `.lux` from the source path first — that extension is never
+  meaningful in the lowered Lua. Set this to `".lua"` for runtimes whose
+  loader requires it (e.g. nanos-world: `Package.Require("Foo.lua")`).
+  Default empty.
 - **`strip_unused`** &mdash; remove unreferenced locals / functions /
   imports from the generated Lua. Off for friendlier debug output;
   default on for smaller bundles.
