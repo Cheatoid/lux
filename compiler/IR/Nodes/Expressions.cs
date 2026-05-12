@@ -80,16 +80,16 @@ public sealed class ParenExpr(NodeID id, TextSpan span, Expr inner) : Expr(id, s
     public Expr Inner { get; } = inner;
 }
 
-public sealed class DotAccessExpr(NodeID id, TextSpan span, Expr obj, NameRef fieldName, bool isOptional = false) : Expr(id, span)
+public sealed class DotAccessExpr(NodeID id, TextSpan span, Expr @object, NameRef fieldName, bool isOptional = false) : Expr(id, span)
 {
-    public Expr Object { get; } = obj;
+    public Expr Object { get; } = @object;
     public NameRef FieldName { get; } = fieldName;
     public bool IsOptional { get; } = isOptional;
 }
 
-public sealed class IndexAccessExpr(NodeID id, TextSpan span, Expr obj, Expr index) : Expr(id, span)
+public sealed class IndexAccessExpr(NodeID id, TextSpan span, Expr @object, Expr index) : Expr(id, span)
 {
-    public Expr Object { get; } = obj;
+    public Expr Object { get; } = @object;
     public Expr Index { get; } = index;
 }
 
@@ -100,9 +100,9 @@ public sealed class FunctionCallExpr(NodeID id, TextSpan span, Expr callee, List
     public bool IsOptional { get; } = isOptional;
 }
 
-public sealed class MethodCallExpr(NodeID id, TextSpan span, Expr obj, NameRef methodName, List<Expr> arguments) : Expr(id, span)
+public sealed class MethodCallExpr(NodeID id, TextSpan span, Expr @object, NameRef methodName, List<Expr> arguments) : Expr(id, span)
 {
-    public Expr Object { get; } = obj;
+    public Expr Object { get; } = @object;
     public NameRef MethodName { get; } = methodName;
     public List<Expr> Arguments { get; } = arguments;
 }

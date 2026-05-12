@@ -46,16 +46,69 @@ public sealed class IRLuaCodec
         "ResolvedType",
     ];
 
+    /// <summary>
+    /// Class- and interface-member helpers that aren't <see cref="Node"/> subclasses
+    /// but should still round-trip through annotation scripts so a class-level
+    /// annotation can read its methods' annotations / parameters / names. Encoded
+    /// the same way as Nodes (kind tag + reflection over public props) minus the
+    /// node ID (these don't carry one). Decoding rebuilds them by reflecting over
+    /// the constructor in the same way <see cref="DecodeNode"/> does.
+    /// </summary>
+    private static readonly HashSet<System.Type> HelperTypes = new()
+    {
+        typeof(ClassFieldNode),
+        typeof(ClassMethodNode),
+        typeof(ClassConstructorNode),
+        typeof(ClassAccessorNode),
+        typeof(InterfaceFieldNode),
+        typeof(InterfaceMethodNode),
+        typeof(EnumMember),
+        typeof(AnnotationArg),
+        typeof(AttribVar),
+        typeof(ImportSpecifier),
+        typeof(ElseIfClause),
+    };
+
     public object? Encode(Node? node)
     {
         if (node == null) return null;
         return EncodeNode(node);
     }
 
+    /// <summary>
+    /// Encodes either a <see cref="Node"/> or a known helper-type (e.g.
+    /// <see cref="ClassMethodNode"/>) into the codec's wire format. Used by
+    /// <see cref="Passes.ApplyAnnotationsPass"/> when handing class/interface
+    /// members to their annotation scripts — those helpers aren't <c>Node</c>s
+    /// but the codec round-trips them all the same.
+    /// </summary>
+    public object? EncodeAny(object? value)
+    {
+        if (value == null) return null;
+        if (value is Node node) return EncodeNode(node);
+        if (HelperTypes.Contains(value.GetType())) return EncodeHelper(value);
+        return null;
+    }
+
     public Node Decode(object? value, IDAlloc<NodeID> alloc, TextSpan fallbackSpan)
     {
         if (value is not Dictionary<string, object?> dict)
             throw new InvalidOperationException("Annotation apply returned a non-table value where a node was expected.");
+        return DecodeNode(dict, alloc, fallbackSpan);
+    }
+
+    /// <summary>
+    /// Decodes either a <see cref="Node"/> or a known helper-type into a
+    /// concrete C# instance. <paramref name="expectedType"/> is used as the
+    /// target for helper-type lookup; pass <c>typeof(ClassMethodNode)</c> when
+    /// decoding a class method back from the annotation sandbox.
+    /// </summary>
+    public object? DecodeAny(object? value, System.Type expectedType, IDAlloc<NodeID> alloc, TextSpan fallbackSpan)
+    {
+        if (value is not Dictionary<string, object?> dict)
+            throw new InvalidOperationException("Annotation apply returned a non-table value where a node was expected.");
+        if (HelperTypes.Contains(expectedType))
+            return DecodeHelper(dict, expectedType, alloc, fallbackSpan);
         return DecodeNode(dict, alloc, fallbackSpan);
     }
 
@@ -137,7 +190,30 @@ public sealed class IRLuaCodec
                 return result;
         }
 
+        if (HelperTypes.Contains(value.GetType()))
+            return EncodeHelper(value);
+
         return Opaque(value);
+    }
+
+    private Dictionary<string, object?> EncodeHelper(object helper)
+    {
+        var dict = new Dictionary<string, object?>
+        {
+            [KindField] = helper.GetType().Name,
+        };
+
+        var spanProp = helper.GetType().GetProperty(nameof(Node.Span));
+        if (spanProp != null && spanProp.GetValue(helper) is TextSpan helperSpan)
+            dict[SpanField] = EncodeSpan(helperSpan);
+
+        foreach (var prop in GetSerializableProperties(helper.GetType()))
+        {
+            var value = prop.GetValue(helper);
+            dict[CamelCase(prop.Name)] = EncodeValue(value);
+        }
+
+        return dict;
     }
 
     private Dictionary<string, object?> Opaque(object value)
@@ -195,8 +271,7 @@ public sealed class IRLuaCodec
             }
 
             var key = CamelCase(name);
-            var hasValue = dict.TryGetValue(key, out var raw);
-            if (!hasValue)
+            if (!dict.TryGetValue(key, out var raw))
             {
                 args[i] = DefaultFor(p);
                 continue;
@@ -222,7 +297,6 @@ public sealed class IRLuaCodec
                 // Swallow — annotation scripts must not be able to crash compilation via a bad field.
             }
         }
-
         return node;
     }
 
@@ -280,6 +354,12 @@ public sealed class IRLuaCodec
             return null;
         }
 
+        if (HelperTypes.Contains(target))
+        {
+            if (raw is Dictionary<string, object?> hd) return DecodeHelper(hd, target, alloc, fallbackSpan);
+            return null;
+        }
+
         if (target.IsGenericType && target.GetGenericTypeDefinition() == typeof(List<>))
         {
             var elemType = target.GetGenericArguments()[0];
@@ -293,6 +373,62 @@ public sealed class IRLuaCodec
         }
 
         return raw;
+    }
+
+    private object DecodeHelper(Dictionary<string, object?> dict, System.Type target,
+        IDAlloc<NodeID> alloc, TextSpan fallbackSpan)
+    {
+        if (dict.TryGetValue(OpaqueField, out var opaqueIdxObj) && opaqueIdxObj is long opaqueIdx)
+        {
+            var cached = _opaqueCache[(int)opaqueIdx];
+            return cached;
+        }
+
+        var ctor = PickConstructor(target);
+        var parameters = ctor.GetParameters();
+        var args = new object?[parameters.Length];
+        var span = DecodeSpan(dict.GetValueOrDefault(SpanField)) ?? fallbackSpan;
+
+        for (var i = 0; i < parameters.Length; i++)
+        {
+            var p = parameters[i];
+            var name = p.Name ?? "";
+
+            if (p.ParameterType == typeof(TextSpan) && name.Equals("span", StringComparison.OrdinalIgnoreCase))
+            {
+                args[i] = span;
+                continue;
+            }
+
+            var key = CamelCase(name);
+            if (!dict.TryGetValue(key, out var raw))
+            {
+                args[i] = DefaultFor(p);
+                continue;
+            }
+
+            args[i] = DecodeValue(raw, p.ParameterType, alloc, span);
+        }
+
+        var instance = ctor.Invoke(args);
+
+        foreach (var prop in target.GetProperties(BindingFlags.Instance | BindingFlags.Public))
+        {
+            if (!prop.CanWrite || SkippedProperties.Contains(prop.Name)) continue;
+            var key = CamelCase(prop.Name);
+            if (!dict.TryGetValue(key, out var raw)) continue;
+            if (parameters.Any(p => CamelCase(p.Name ?? "") == key)) continue;
+            try
+            {
+                prop.SetValue(instance, DecodeValue(raw, prop.PropertyType, alloc, span));
+            }
+            catch
+            {
+                // swallow — same hardening as DecodeNode
+            }
+        }
+
+        return instance;
     }
 
     private static TextSpan? DecodeSpan(object? raw)

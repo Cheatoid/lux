@@ -73,6 +73,15 @@ function ir.dotAccess(object, field)
     }
 end
 
+function ir.newExpr(className, args)
+    return {
+        __kind = "NewExpr",
+        __span = span(),
+        className = nameRef(className),
+        arguments = args or {},
+    }
+end
+
 function ir.localDecl(name, value)
     return {
         __kind = "LocalDecl",
@@ -81,4 +90,69 @@ function ir.localDecl(name, value)
         values = value and { value } or {},
         isMutable = true,
     }
+end
+
+function ir.varargExpr()
+    return { __kind = "VarargExpr", __span = span() }
+end
+
+-- Builds an Annotation IR node. `name` is the annotation ident (e.g. "RemoteEvent").
+-- `args` is a list of either {name = "k", value = exprIR} or just exprIR (positional).
+function ir.annotation(name, args)
+    local out = {}
+    for _, a in ipairs(args or {}) do
+        if a.__kind ~= nil then
+            -- Bare expr → positional arg
+            out[#out + 1] = { name = nil, value = a, span = span() }
+        else
+            out[#out + 1] = { name = a.name, value = a.value, span = span() }
+        end
+    end
+    return {
+        __kind = "Annotation",
+        __span = span(),
+        name = nameRef(name),
+        args = out,
+    }
+end
+
+-- Parameter helper. `name` becomes the parameter ident; `isVararg = true`
+-- produces a `...` parameter (in which case `name` is conventionally "vararg"
+-- or "args" and only used for diagnostics).
+function ir.param(name, opts)
+    opts = opts or {}
+    return {
+        __kind = "Parameter",
+        __span = span(),
+        name = nameRef(name or "_"),
+        typeAnnotation = nil,
+        isVararg = opts.isVararg and true or false,
+        defaultValue = nil,
+    }
+end
+
+-- Anonymous `function(...) ... end`. `params` is a list of ir.param()s
+-- (defaults to a single `...` param). `body` is a list of stmts; `returnStmt`
+-- is optional.
+function ir.functionDef(params, body, returnStmt)
+    return {
+        __kind = "FunctionDefExpr",
+        __span = span(),
+        parameters = params or { ir.param("vararg", { isVararg = true }) },
+        returnType = nil,
+        body = body or {},
+        returnStmt = returnStmt,
+        isAsync = false,
+    }
+end
+
+-- Convenience: `function(...) inst:Method(...) end` — the closure shape
+-- @nanosPackage emits for every Subscribe call. `instExpr` is an Expr (e.g.
+-- ir.nameExpr("__inst")); `methodName` is the bare method ident.
+function ir.varargMethodCallClosure(instExpr, methodName)
+    return ir.functionDef(
+        { ir.param("vararg", { isVararg = true }) },
+        { ir.exprStmt(ir.methodCall(instExpr, methodName, { ir.varargExpr() })) },
+        nil
+    )
 end

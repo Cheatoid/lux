@@ -66,6 +66,20 @@ public sealed class Project
     }
 
     /// <summary>
+    /// Writes <paramref name="contents"/> to <paramref name="path"/>, creating any
+    /// missing parent directories. Used by setup scripts to lay down arbitrary
+    /// text files (Index.lux entries, sidecar manifests, etc.) without dropping
+    /// to <c>io.open</c>.
+    /// </summary>
+    [LuxExport("writeFile")]
+    public static void WriteFile(string path, string contents)
+    {
+        var dir = Path.GetDirectoryName(Path.GetFullPath(path));
+        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+        File.WriteAllText(path, contents);
+    }
+
+    /// <summary>
     /// Runs a shell command in <paramref name="cwd"/> (or the current working directory
     /// if nil). Returns the exit code. Output is inherited so users see progress.
     /// </summary>

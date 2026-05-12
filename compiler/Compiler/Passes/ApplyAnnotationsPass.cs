@@ -133,7 +133,7 @@ public sealed class ApplyAnnotationsPass()
                 continue;
             }
 
-            if (def.Target != targetKind)
+            if (!def.Targets.Contains(targetKind))
             {
                 ctx.Diag.Report(ann.Span, DiagnosticCode.ErrAnnotationTargetMismatch, ann.Name.Name,
                     targetKind.ToString());
@@ -291,7 +291,7 @@ public sealed class ApplyAnnotationsPass()
                     continue;
                 }
 
-                if (def.Target != targetKind)
+                if (!def.Targets.Contains(targetKind))
                 {
                     ctx.Diag.Report(ann.Span, DiagnosticCode.ErrAnnotationTargetMismatch, ann.Name.Name,
                         targetKind.ToString());
@@ -304,10 +304,7 @@ public sealed class ApplyAnnotationsPass()
                 object? encoded;
                 try
                 {
-                    if (current is Node node)
-                        encoded = codec.Encode(node);
-                    else
-                        encoded = null;
+                    encoded = codec.EncodeAny(current);
                 }
                 catch
                 {
@@ -342,7 +339,8 @@ public sealed class ApplyAnnotationsPass()
                     }
                     else
                     {
-                        var node = codec.Decode(result, ctx.NodeAlloc, ann.Span);
+                        var node = codec.DecodeAny(result, typeof(T), ctx.NodeAlloc, ann.Span);
+                        if (node == null) break;
                         current = node;
                         produced = [node];
                     }
@@ -375,7 +373,7 @@ public sealed class ApplyAnnotationsPass()
             foreach (var item in list)
             {
                 if (item is not Dictionary<string, object?> itemDict) continue;
-                var node = codec.Decode(itemDict, ctx.NodeAlloc, ann.Span);
+                var node = codec.DecodeAny(itemDict, typeof(T), ctx.NodeAlloc, ann.Span);
                 if (node is T t) nodes.Add(t);
             }
 
@@ -411,7 +409,7 @@ public sealed class ApplyAnnotationsPass()
                 continue;
             }
 
-            if (def.Target != targetKind)
+            if (!def.Targets.Contains(targetKind))
             {
                 ctx.Diag.Report(ann.Span, DiagnosticCode.ErrAnnotationTargetMismatch, ann.Name.Name,
                     targetKind.ToString());
@@ -466,7 +464,7 @@ public sealed class ApplyAnnotationsPass()
                     continue;
                 }
 
-                if (def.Target != AnnotationTargetKind.Parameter)
+                if (!def.Targets.Contains(AnnotationTargetKind.Parameter))
                 {
                     ctx.Diag.Report(ann.Span, DiagnosticCode.ErrAnnotationTargetMismatch, ann.Name.Name, "Parameter");
                     continue;

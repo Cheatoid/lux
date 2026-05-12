@@ -60,6 +60,8 @@ The sandboxed runtime has access to:
 
 It does **not** have access to: `io`, `os`, `package`, `require`, `load`, `dofile`, `debug`. Annotations cannot read your filesystem, fetch URLs, or escape the compile.
 
+> **Important note**: Annotations run under a specific configuration which e.g. has its index base back to normal Lua behavior (1-based) regardless of the project's configured.
+
 ---
 
 ## Registering annotation files

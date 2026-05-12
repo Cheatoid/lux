@@ -195,7 +195,7 @@ public sealed class SignatureHelpHandler(LuxWorkspace workspace) : SignatureHelp
                 Documentation = new StringOrMarkupContent(new MarkupContent
                 {
                     Kind = MarkupKind.Markdown,
-                    Value = $"target: `{meta.Target}`  \nsource: `{System.IO.Path.GetFileName(meta.SourcePath)}`"
+                    Value = $"target: `{string.Join(" | ", meta.Targets)}`  \nsource: `{System.IO.Path.GetFileName(meta.SourcePath)}`"
                 })
             }),
             ActiveSignature = 0,

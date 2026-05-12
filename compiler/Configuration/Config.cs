@@ -135,6 +135,13 @@ public sealed class Config
 
     public Dictionary<string, object> PeerDependencies { get; set; } = new();
 
+    /// <summary>
+    /// Asset files to copy to the output directory. Keys are relative paths to the source files, values are relative
+    /// paths in the output directory. This is used to include non-Lux files in the output, such as images, sounds, or
+    /// other resources.
+    /// </summary>
+    public Dictionary<string, string> Assets { get; set; } = new();
+
     #endregion
 
     #region Initialization
@@ -193,6 +200,8 @@ public sealed class Config
             DevDependencies.TryAdd(kv.Key, kv.Value);
         foreach (var kv in config.PeerDependencies)
             PeerDependencies.TryAdd(kv.Key, kv.Value);
+        foreach (var kv in config.Assets)
+            Assets.TryAdd(kv.Key, kv.Value);
     }
     
     #endregion

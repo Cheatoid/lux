@@ -86,7 +86,20 @@ public sealed class ResolveAnnotationsPass() : Pass(PassName, PassScope.PerBuild
     {
         var annotationName = Path.GetFileNameWithoutExtension(path);
 
-        var subCompiler = new LuxCompiler { Config = ctx.Config };
+        var subConfig = ctx.Config.Clone();
+        subConfig.Code = new CodeSection
+        {
+            IndexBase = 1,
+            ConcatOperator = ctx.Config.Code.ConcatOperator,
+            StringInterpolation = ctx.Config.Code.StringInterpolation,
+            AltBooleanOperators = ctx.Config.Code.AltBooleanOperators,
+            Semicolons = ctx.Config.Code.Semicolons,
+            ImportStatement = ctx.Config.Code.ImportStatement,
+            StripUnused = ctx.Config.Code.StripUnused,
+            Libs = [..ctx.Config.Code.Libs],
+        };
+
+        var subCompiler = new LuxCompiler { Config = subConfig };
         subCompiler.AddSource(path);
 
         var pm = new PassManager();
@@ -122,7 +135,7 @@ public sealed class ResolveAnnotationsPass() : Pass(PassName, PassScope.PerBuild
             ctx.Diag.Report(TextSpan.Empty, DiagnosticCode.ErrAnnotationInAnnotationFile);
         }
 
-        if (!TryExtractMeta(file.Hir.Body, out var target, out var parameters, out var metaError))
+        if (!TryExtractMeta(file.Hir.Body, out var targets, out var parameters, out var metaError))
         {
             ctx.Diag.Report(TextSpan.Empty, DiagnosticCode.ErrAnnotationMetaInvalid, annotationName, metaError ?? "unknown");
             return;
@@ -134,7 +147,7 @@ public sealed class ResolveAnnotationsPass() : Pass(PassName, PassScope.PerBuild
             return;
         }
 
-        var def = new AnnotationDefinition(annotationName, target, parameters, file.GeneratedLua, path);
+        var def = new AnnotationDefinition(annotationName, targets, parameters, file.GeneratedLua, path);
         if (!registry.TryAdd(def))
         {
             ctx.Diag.Report(TextSpan.Empty, DiagnosticCode.ErrAnnotationDuplicateName, annotationName);
@@ -166,15 +179,15 @@ public sealed class ResolveAnnotationsPass() : Pass(PassName, PassScope.PerBuild
         var visitor = new IRVisitor(filePath, nodeAlloc, diag, config);
         if (visitor.Visit(parser.script()) is not IRScript script) return null;
 
-        if (!TryExtractMeta(script.Body, out var target, out var parameters, out _)) return null;
+        if (!TryExtractMeta(script.Body, out var targets, out var parameters, out _)) return null;
 
         var name = Path.GetFileNameWithoutExtension(filePath);
-        return new AnnotationMeta(name, target, parameters, filePath);
+        return new AnnotationMeta(name, targets, parameters, filePath);
     }
 
-    public static bool TryExtractMeta(List<Stmt> body, out AnnotationTargetKind target, out List<AnnotationParamSpec> parameters, out string? error)
+    public static bool TryExtractMeta(List<Stmt> body, out HashSet<AnnotationTargetKind> targets, out List<AnnotationParamSpec> parameters, out string? error)
     {
-        target = AnnotationTargetKind.Function;
+        targets = [AnnotationTargetKind.Function];
         parameters = [];
         error = null;
 
@@ -204,12 +217,13 @@ public sealed class ResolveAnnotationsPass() : Pass(PassName, PassScope.PerBuild
             switch (field.Name.Name)
             {
                 case "target":
-                    if (!TryParseTarget(field.Value, out var parsedTarget, out var targetErr))
+                case "targets":
+                    if (!TryParseTargets(field.Value, out var parsedTargets, out var targetErr))
                     {
                         error = targetErr;
                         return false;
                     }
-                    target = parsedTarget;
+                    targets = parsedTargets;
                     break;
                 case "params":
                     if (field.Value is TableConstructorExpr paramsTable)
@@ -229,7 +243,45 @@ public sealed class ResolveAnnotationsPass() : Pass(PassName, PassScope.PerBuild
         return true;
     }
 
-    private static bool TryParseTarget(Expr expr, out AnnotationTargetKind target, out string? error)
+    private static bool TryParseTargets(Expr expr, out HashSet<AnnotationTargetKind> targets, out string? error)
+    {
+        targets = [];
+        error = null;
+
+        if (expr is TableConstructorExpr listExpr)
+        {
+            foreach (var f in listExpr.Fields)
+            {
+                if (f.Name != null)
+                {
+                    error = "`meta.target` list must contain only positional entries";
+                    return false;
+                }
+                if (!TryParseSingleTarget(f.Value, out var single, out var singleErr))
+                {
+                    error = singleErr;
+                    return false;
+                }
+                targets.Add(single);
+            }
+            if (targets.Count == 0)
+            {
+                error = "`meta.target` list must contain at least one AnnotationTarget";
+                return false;
+            }
+            return true;
+        }
+
+        if (!TryParseSingleTarget(expr, out var parsed, out var err))
+        {
+            error = err;
+            return false;
+        }
+        targets.Add(parsed);
+        return true;
+    }
+
+    private static bool TryParseSingleTarget(Expr expr, out AnnotationTargetKind target, out string? error)
     {
         target = AnnotationTargetKind.Function;
         error = null;
@@ -244,7 +296,7 @@ public sealed class ResolveAnnotationsPass() : Pass(PassName, PassScope.PerBuild
 
         if (targetName == null)
         {
-            error = "`meta.target` must be an AnnotationTarget enum value";
+            error = "`meta.target` entries must be AnnotationTarget enum values";
             return false;
         }
 

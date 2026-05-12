@@ -593,8 +593,9 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
     {
         if (cd.IsAbstract || classType.BaseClass == null) return;
 
+        var visited = new HashSet<ClassType>();
         var cur = classType.BaseClass;
-        while (cur != null)
+        while (cur != null && visited.Add(cur))
         {
             foreach (var abstractMethod in cur.AbstractMethods)
             {

@@ -1165,7 +1165,7 @@ public sealed class LuxWorkspace
             return;
         }
 
-        if (meta.Target != targetKind)
+        if (!meta.Targets.Contains(targetKind))
         {
             diag.Report(ann.Span, LuxDiagnosticCode.ErrAnnotationTargetMismatch, ann.Name.Name, targetKind.ToString());
             return;
@@ -1294,7 +1294,7 @@ public sealed class LuxWorkspace
             return label;
         });
         var sig = $"@{meta.Name}({string.Join(", ", parts)})";
-        return $"(annotation) {sig}\n-- target: {meta.Target}\n-- source: {Path.GetFileName(meta.SourcePath)}";
+        return $"(annotation) {sig}\n-- target: {string.Join(" | ", meta.Targets)}\n-- source: {Path.GetFileName(meta.SourcePath)}";
     }
 
     public List<string> DiscoverAnnotationNames()

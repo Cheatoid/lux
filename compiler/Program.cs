@@ -214,6 +214,39 @@ internal static class Program
             var declPath = Path.Combine(outDir, declName + ".d.lux");
             await File.WriteAllTextAsync(declPath, declContent);
         }
+        
+        await CopyAssetsAsync(outDir, config);
+    }
+
+    private static async Task CopyAssetsAsync(string outDir, Config config)
+    {
+        if (config.Assets.Count == 0) return;
+        Console.WriteLine($"Copying assets from '{config.Name}' to '{outDir}'.");
+
+        // Asset paths are resolved relative to the PROJECT ROOT (where
+        // `lux.toml` lives, i.e. the current working directory at build time),
+        // not the common parent of source files. This lets manifests like
+        // `Package.toml` sit next to `lux.toml` outside `src/` and still be
+        // copied into the output.
+        var projectRoot = Environment.CurrentDirectory;
+
+        foreach (var (srcRelPath, destRelPath) in config.Assets)
+        {
+            var srcFile = Path.Combine(projectRoot, srcRelPath);
+            var destFile = Path.Combine(outDir, destRelPath);
+            
+            if (!File.Exists(srcFile))
+            {
+                await Console.Error.WriteLineAsync($"File not found: {srcRelPath}! Skipping.");
+                continue;
+            }
+
+            var parentDir = Path.GetDirectoryName(destFile);
+            if (!string.IsNullOrEmpty(parentDir))
+                Directory.CreateDirectory(parentDir);
+            
+            File.Copy(srcFile, destFile, true);
+        }
     }
 
     private static string FindCommonParent(List<string> paths)
@@ -361,9 +394,6 @@ internal static class Program
         using var runtime = new LuxRuntime();
         runtime.AddPackagePath(outDir);
 
-        // Make `require("foo/bar")` from generated Lua resolve to a package
-        // installed under lux_modules/<name>/ so file-deps and git-deps can
-        // ship plain .lua entry points without further configuration.
         var modulesDir = Path.Combine(Environment.CurrentDirectory, "lux_modules");
         if (Directory.Exists(modulesDir))
             runtime.AddPackagePath(modulesDir);
@@ -546,7 +576,7 @@ internal static class Program
         var configPath = Path.Combine(Environment.CurrentDirectory, "lux.toml");
         var config = Config.LoadFromFile(configPath) ?? new Config();
 
-        var site = Lux.Doc.DocSiteBuilder.Build(config, Environment.CurrentDirectory, out var diagnostics);
+        var site = Doc.DocSiteBuilder.Build(config, Environment.CurrentDirectory, out var diagnostics);
         foreach (var d in diagnostics) await Console.Error.WriteLineAsync(d);
 
         var fullOut = Path.IsPathRooted(outDir) ? outDir : Path.Combine(Environment.CurrentDirectory, outDir);
@@ -554,13 +584,13 @@ internal static class Program
 
         if (emitMd)
         {
-            var mdRenderer = new Lux.Doc.MarkdownDocRenderer();
+            var mdRenderer = new Doc.MarkdownDocRenderer();
             mdRenderer.WriteTo(site, fullOut);
         }
 
         if (emitHtml)
         {
-            var htmlRenderer = new Lux.Doc.HtmlDocRenderer();
+            var htmlRenderer = new Doc.HtmlDocRenderer();
             htmlRenderer.WriteTo(site, fullOut);
         }
 

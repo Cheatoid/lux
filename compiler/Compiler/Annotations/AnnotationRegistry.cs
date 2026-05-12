@@ -41,13 +41,21 @@ public sealed class AnnotationParamSpec(string name, string typeName, object? de
 /// </summary>
 public sealed class AnnotationDefinition(
     string name,
-    AnnotationTargetKind target,
+    HashSet<AnnotationTargetKind> targets,
     List<AnnotationParamSpec> parameters,
     string compiledLua,
     string sourcePath)
 {
     public string Name { get; } = name;
-    public AnnotationTargetKind Target { get; } = target;
+    /// <summary>
+    /// All target kinds this annotation accepts. A marker that works on both
+    /// top-level functions and class methods (typical for nanos-style event
+    /// hooks) has both <see cref="AnnotationTargetKind.Function"/> and
+    /// <see cref="AnnotationTargetKind.ClassMethod"/> in this set.
+    /// </summary>
+    public HashSet<AnnotationTargetKind> Targets { get; } = targets;
+    /// <summary>The first declared target; preserved for diagnostics and IDE labels.</summary>
+    public AnnotationTargetKind PrimaryTarget => Targets.FirstOrDefault();
     public List<AnnotationParamSpec> Parameters { get; } = parameters;
     /// <summary>The transpiled Lua code for this annotation's definition file.</summary>
     public string CompiledLua { get; } = compiledLua;
@@ -63,12 +71,13 @@ public sealed class AnnotationDefinition(
 /// </summary>
 public sealed class AnnotationMeta(
     string name,
-    AnnotationTargetKind target,
+    HashSet<AnnotationTargetKind> targets,
     List<AnnotationParamSpec> parameters,
     string sourcePath)
 {
     public string Name { get; } = name;
-    public AnnotationTargetKind Target { get; } = target;
+    public HashSet<AnnotationTargetKind> Targets { get; } = targets;
+    public AnnotationTargetKind PrimaryTarget => Targets.FirstOrDefault();
     public List<AnnotationParamSpec> Parameters { get; } = parameters;
     public string SourcePath { get; } = sourcePath;
 }
