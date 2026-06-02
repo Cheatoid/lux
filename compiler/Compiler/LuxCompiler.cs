@@ -131,7 +131,23 @@ public class LuxCompiler
         parser.RemoveErrorListeners();
         parser.AddErrorListener(new DiagnosticsTokenErrorListener(Diagnostics, file.Filename));
         var visitor = new IRVisitor(file.Filename, NodeAlloc, Diagnostics, Config);
-        var ir = visitor.Visit(parser.script());
+
+        Node? ir;
+        try
+        {
+            ir = visitor.Visit(parser.script());
+        }
+        catch (Exception)
+        {
+            // ANTLR error-recovery can hand the visitor a partial/malformed tree
+            // (missing tokens show up as nulls). If lowering that tree throws, the
+            // syntax error has already been recorded by the error listeners, so we
+            // surface a clean diagnostic instead of letting the build crash with an
+            // unhandled NullReferenceException.
+            Diagnostics.Report(TextSpan.Empty, DiagnosticCode.ErrPreparsingFailed);
+            return false;
+        }
+
         if (ir is not IRScript script)
         {
             Diagnostics.Report(TextSpan.Empty, DiagnosticCode.ErrPreparsingFailed);

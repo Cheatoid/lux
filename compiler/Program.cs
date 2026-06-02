@@ -29,6 +29,7 @@ internal static class Program
         var exit = command switch
         {
             "build" => await RunBuildAsync(args.Skip(1).ToArray()),
+            "watch" => await RunWatchAsync(args.Skip(1).ToArray()),
             "run" => await RunExecuteAsync(args.Skip(1).ToArray()),
             "lps" => await RunLpsAsync(),
             "init" => RunInit(),
@@ -68,7 +69,17 @@ internal static class Program
     {
         var configPath = Path.Combine(Environment.CurrentDirectory, "lux.toml");
         var config = Config.LoadFromFile(configPath) ?? new Config();
+        return await CompileProjectAsync(config, runScripts: true);
+    }
 
+    /// <summary>
+    /// Compiles the current project (every <c>*.lux</c> file under <c>config.Source</c>)
+    /// and writes the generated Lua to <c>config.Output</c>. Shared by <c>lux build</c>
+    /// (with pre/post-build scripts) and <c>lux watch</c> (scripts skipped — a watch loop
+    /// should only recompile, not re-run side-effecting build hooks on every save).
+    /// </summary>
+    private static async Task<int> CompileProjectAsync(Config config, bool runScripts)
+    {
         if (config.TypesOnly)
         {
             Console.WriteLine("Types-only project — nothing to compile.");
@@ -84,7 +95,7 @@ internal static class Program
 
         var outDir = Path.Combine(Environment.CurrentDirectory, config.Output);
 
-        if (!RunScripts(config.Scripts.PreBuild, "pre-build"))
+        if (runScripts && !RunScripts(config.Scripts.PreBuild, "pre-build"))
             return 1;
 
         var sourceFiles = Directory.GetFiles(srcDir, "*.lux", SearchOption.AllDirectories)
@@ -124,10 +135,200 @@ internal static class Program
 
         Console.WriteLine($"Build SUCCESS — {sourceFiles.Length} file(s) compiled to '{config.Output}/'.");
 
-        if (!RunScripts(config.Scripts.PostBuild, "post-build"))
+        if (runScripts && !RunScripts(config.Scripts.PostBuild, "post-build"))
             return 1;
 
         return 0;
+    }
+
+    /// <summary>
+    /// Watches <c>config.Source</c> recursively and recompiles the project whenever a
+    /// <c>*.lux</c> file changes (debounced). Runs until the user presses Ctrl+C.
+    /// </summary>
+    private static async Task<int> RunWatchAsync(string[] args)
+    {
+        var debounceMs = 300;
+        for (var i = 0; i < args.Length; i++)
+        {
+            if (args[i] == "--debounce" && i + 1 < args.Length && int.TryParse(args[i + 1], out var ms) && ms >= 0)
+            {
+                debounceMs = ms;
+                i++;
+            }
+            else
+            {
+                await Console.Error.WriteLineAsync($"error: unexpected argument '{args[i]}'. Usage: lux watch [--debounce <ms>]");
+                return 1;
+            }
+        }
+
+        var configPath = Path.Combine(Environment.CurrentDirectory, "lux.toml");
+        if (!File.Exists(configPath))
+        {
+            await Console.Error.WriteLineAsync("error: lux.toml not found in current directory. Run 'lux init' first.");
+            return 1;
+        }
+
+        var initialConfig = Config.LoadFromFile(configPath) ?? new Config();
+        if (initialConfig.TypesOnly)
+        {
+            Console.WriteLine("Types-only project — nothing to watch.");
+            return 0;
+        }
+
+        var srcDir = Path.Combine(Environment.CurrentDirectory, initialConfig.Source);
+        if (!Directory.Exists(srcDir))
+        {
+            await Console.Error.WriteLineAsync($"Source directory '{initialConfig.Source}' not found.");
+            return 1;
+        }
+
+        // A rebuild reloads lux.toml so config edits (e.g. output path) are picked up,
+        // and uses a fresh compiler each time since the compiler accumulates state.
+        async Task RebuildAsync(string reason)
+        {
+            var stamp = DateTime.Now.ToString("HH:mm:ss");
+            Console.WriteLine($"\n[{stamp}] {reason} — rebuilding…");
+            try
+            {
+                var config = Config.LoadFromFile(configPath) ?? new Config();
+                await CompileProjectAsync(config, runScripts: false);
+            }
+            catch (Exception ex)
+            {
+                await Console.Error.WriteLineAsync($"Build FAILED: {ex.Message}");
+            }
+            Console.WriteLine("Watching for changes… (Ctrl+C to stop)");
+        }
+
+        Console.WriteLine($"lux watch — watching '{initialConfig.Source}/' for *.lux changes.");
+        await RebuildAsync("initial build");
+
+        using var debouncer = new Debouncer(TimeSpan.FromMilliseconds(debounceMs), RebuildAsync);
+        using var watcher = new FileSystemWatcher(srcDir)
+        {
+            IncludeSubdirectories = true,
+            Filter = "*.lux",
+            NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName |
+                           NotifyFilters.DirectoryName | NotifyFilters.Size,
+        };
+
+        void OnChanged(object? _, FileSystemEventArgs e) =>
+            debouncer.Trigger($"{Path.GetFileName(e.Name ?? e.FullPath)} {e.ChangeType.ToString().ToLowerInvariant()}");
+        void OnRenamed(object? _, RenamedEventArgs e) =>
+            debouncer.Trigger($"{Path.GetFileName(e.Name ?? e.FullPath)} renamed");
+
+        watcher.Changed += OnChanged;
+        watcher.Created += OnChanged;
+        watcher.Deleted += OnChanged;
+        watcher.Renamed += OnRenamed;
+        watcher.Error += (_, e) =>
+            Console.Error.WriteLine($"watch error: {e.GetException().Message}");
+        watcher.EnableRaisingEvents = true;
+
+        // RunContinuationsAsynchronously: TrySetResult is invoked from a POSIX signal
+        // handler thread, and we must not run the (disposing) continuation inline there.
+        var stop = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        ConsoleCancelEventHandler onCancel = (_, e) =>
+        {
+            e.Cancel = true;
+            stop.TrySetResult();
+        };
+        Console.CancelKeyPress += onCancel;
+
+        // Console.CancelKeyPress alone is unreliable when stdout is redirected or the
+        // process has no controlling terminal (CI, `lux watch > log &`). Register the
+        // POSIX signals directly so Ctrl+C / SIGTERM always stop the loop cleanly.
+        var signals = new List<PosixSignalRegistration>();
+        if (!OperatingSystem.IsWindows())
+        {
+            foreach (var sig in new[] { PosixSignal.SIGINT, PosixSignal.SIGTERM, PosixSignal.SIGQUIT })
+            {
+                signals.Add(PosixSignalRegistration.Create(sig, ctx =>
+                {
+                    ctx.Cancel = true;
+                    stop.TrySetResult();
+                }));
+            }
+        }
+
+        try
+        {
+            await stop.Task;
+        }
+        finally
+        {
+            Console.CancelKeyPress -= onCancel;
+            foreach (var reg in signals) reg.Dispose();
+        }
+
+        Console.WriteLine("\nlux watch stopped.");
+        return 0;
+    }
+
+    /// <summary>
+    /// Collapses a burst of file-system events into a single action that fires once the
+    /// stream goes quiet for <c>delay</c>. Re-entrancy safe: events that arrive while the
+    /// action is running schedule exactly one more run afterwards.
+    /// </summary>
+    private sealed class Debouncer(TimeSpan delay, Func<string, Task> action) : IDisposable
+    {
+        private readonly Lock _gate = new();
+        private Timer? _timer;
+        private bool _running;
+        private string? _pendingReason;
+        private string? _lastReason;
+
+        public void Trigger(string reason)
+        {
+            lock (_gate)
+            {
+                _lastReason = reason;
+                _timer?.Dispose();
+                _timer = new Timer(_ => Fire(), null, delay, Timeout.InfiniteTimeSpan);
+            }
+        }
+
+        private async void Fire()
+        {
+            string reason;
+            lock (_gate)
+            {
+                if (_running)
+                {
+                    _pendingReason = _lastReason;
+                    return;
+                }
+                _running = true;
+                reason = _lastReason ?? "change detected";
+            }
+
+            try
+            {
+                await action(reason);
+            }
+            catch
+            {
+                // action is expected to handle its own errors; swallow to keep the
+                // timer thread alive across a failed rebuild.
+            }
+            finally
+            {
+                string? again;
+                lock (_gate)
+                {
+                    _running = false;
+                    again = _pendingReason;
+                    _pendingReason = null;
+                }
+                if (again != null) Trigger(again);
+            }
+        }
+
+        public void Dispose()
+        {
+            lock (_gate) _timer?.Dispose();
+        }
     }
 
     private static async Task<int> RunBuildFilesAsync(string[] fileArgs)
@@ -546,6 +747,8 @@ internal static class Program
         Console.WriteLine("Commands:");
         Console.WriteLine("  build              Compile the project (reads lux.toml)");
         Console.WriteLine("  build <files...>   Compile specific .lux files (optional lux.toml)");
+        Console.WriteLine("  watch              Recompile the project whenever a *.lux file changes");
+        Console.WriteLine("                     Flags: --debounce <ms> (default 300)");
         Console.WriteLine("  run                Compile and execute the project via embedded Lua");
         Console.WriteLine("  run <files...>     Compile and execute specific .lux files");
         Console.WriteLine("  init               Create a new Lux project in the current directory");
@@ -553,6 +756,7 @@ internal static class Program
         Console.WriteLine("                     Flags: [dir], --skip-setup, --offline, --no-cache");
         Console.WriteLine("  install            Install declared dependencies into lux_modules/");
         Console.WriteLine("  add <spec>         Add a dependency (e.g. github:owner/repo@v1)");
+        Console.WriteLine("                     Monorepo: github:owner/repo/path/to/pkg@v1 picks one package");
         Console.WriteLine("                     Flags: --dev, --peer");
         Console.WriteLine("  remove <name>      Remove a declared dependency");
         Console.WriteLine("  pm prune [spec]    Wipe cached bare clones / snapshots so next install re-fetches");

@@ -66,6 +66,24 @@ Pre/post-build scripts from `[scripts]` run before/after compilation.
 
 ---
 
+## `lux watch`
+
+Watches `<source>/` recursively and recompiles the whole project whenever a `*.lux` file
+is created, changed, deleted, or renamed. File-system events are debounced so a burst of
+saves triggers a single rebuild. Compile errors are printed and the watcher keeps running;
+press `Ctrl+C` (or send `SIGTERM`) to stop.
+
+Unlike `lux build`, the watch loop does **not** run `[scripts]` pre/post-build hooks — it
+only recompiles, so side-effecting hooks don't fire on every save. Each rebuild reloads
+`lux.toml`, so changes to the output path or compiler options are picked up live.
+
+```bash
+lux watch                  # rebuild on every change
+lux watch --debounce 150   # shorten the debounce window (ms, default 300)
+```
+
+---
+
 ## `lux run [files...] [-- args...]`
 
 Compiles **and** executes via the embedded Lua 5.4 interpreter (KeraLua). State on the target machine is irrelevant &mdash; the binary brings its own Lua.

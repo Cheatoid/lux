@@ -120,8 +120,13 @@ internal partial class IRVisitor
         return start < end ? s[start..end] : string.Empty;
     }
 
-    private string ParseStringValue(LuxParser.StrContext ctx)
+    private string ParseStringValue(LuxParser.StrContext? ctx)
     {
+        // ctx can be null when ANTLR error-recovery synthesizes a parse tree for
+        // malformed input (e.g. `import { a, b }` without the trailing `from "..."`).
+        // The syntax error has already been reported by the error listener; we just
+        // avoid dereferencing the missing node so we don't crash on top of it.
+        if (ctx == null) return string.Empty;
         return ctx switch
         {
             LuxParser.DoubleQuotedStrContext => StripQuotes(ctx.GetText()),
@@ -131,14 +136,14 @@ internal partial class IRVisitor
         };
     }
 
-    private (string, TextSpan) ParseStringValueWithSpan(LuxParser.StrContext ctx)
+    private (string, TextSpan) ParseStringValueWithSpan(LuxParser.StrContext? ctx)
     {
         var value = ParseStringValue(ctx);
-        var span = SpanFromCtx(ctx);
+        var span = ctx != null ? SpanFromCtx(ctx) : TextSpan.Empty;
         return (value, span);
     }
 
-    private NameRef NameRefFromString(LuxParser.StrContext ctx)
+    private NameRef NameRefFromString(LuxParser.StrContext? ctx)
     {
         var (value, span) = ParseStringValueWithSpan(ctx);
         return new NameRef(value, span);

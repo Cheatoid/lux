@@ -37,6 +37,7 @@ lux-core = ">=1.0.0"
 | `name@version`                         | Registry alias → git URL + ref `vX.Y.Z`             |
 | `github:owner/repo`                    | `https://github.com/owner/repo.git`                  |
 | `github:owner/repo@v1`                 | `https://github.com/owner/repo.git#v1`               |
+| `github:owner/repo/sub/dir@v1`         | One package inside a monorepo (sparse-checked subdir)|
 | `gh:owner/repo[@ref]`                  | Shorthand for `github:...`                           |
 | `https://example.com/foo.git`          | Direct git URL, default branch                       |
 | `https://example.com/foo.git#v1.0`     | Direct git URL, specific ref                         |
@@ -44,8 +45,28 @@ lux-core = ">=1.0.0"
 | `{ git = "...", tag = "v1" }`          | Inline table form, same fields as the spec strings   |
 | `{ git = "...", branch = "main" }`     | Branch instead of tag                                |
 | `{ git = "...", rev = "abc1234" }`     | Specific commit SHA                                  |
+| `{ git = "...", subdir = "pkgs/x" }`   | Package living in a subdirectory of the repo         |
 
 A ref can be a branch, a tag, or a commit SHA. Tags are preferred for reproducibility.
+
+### Monorepos (multiple packages in one repo)
+
+When a repository hosts more than one Lux package, name the package's subdirectory so the
+resolver knows which one to add. Any path segments after `owner/repo` in a host shortcut
+become the in-repo subdirectory, or you can spell it out with the `subdir` key:
+
+```bash
+lux add github:owner/monorepo/packages/math@v1
+```
+
+```toml
+[dependencies]
+math = { git = "https://github.com/owner/monorepo.git", tag = "v1", subdir = "packages/math" }
+```
+
+Lux sparse-checks only that subdirectory into the store and reads **its** `lux.toml` to
+determine the dependency name and its own transitive dependencies. The same repo can be
+added multiple times pointing at different subdirectories.
 
 ---
 

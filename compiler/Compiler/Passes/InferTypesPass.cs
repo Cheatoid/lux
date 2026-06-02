@@ -1369,9 +1369,35 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
             return pc.Types.PrimAny.ID;
         }
 
-        var calleeName = inner is FunctionCallExpr fc2 && fc2.Callee is NameExpr ne ? ne.Name.Name : "function";
-        pc.Diag.Report(awaitExpr.Span, DiagnosticCode.ErrAwaitNonAsync, calleeName);
+        pc.Diag.Report(awaitExpr.Span, DiagnosticCode.ErrAwaitNonAsync, DescribeCallee(inner));
         return pc.Types.PrimAny.ID;
+    }
+
+    /// <summary>
+    /// Renders a readable name for the thing being <c>await</c>ed so diagnostics can
+    /// point at the actual call (e.g. <c>http.get</c>) instead of the generic
+    /// placeholder "function". Falls back to "function" only when the callee is an
+    /// anonymous/computed expression with no obvious name.
+    /// </summary>
+    private static string DescribeCallee(Expr expr)
+    {
+        switch (expr)
+        {
+            case FunctionCallExpr fc:
+                return DescribeCallee(fc.Callee);
+            case MethodCallExpr mc:
+                return $"{DescribeCallee(mc.Object)}:{mc.MethodName.Name}";
+            case NameExpr ne:
+                return ne.Name.Name;
+            case DotAccessExpr da:
+                return $"{DescribeCallee(da.Object)}.{da.FieldName.Name}";
+            case IndexAccessExpr ia:
+                return $"{DescribeCallee(ia.Object)}[...]";
+            case ParenExpr pe:
+                return DescribeCallee(pe.Inner);
+            default:
+                return "function";
+        }
     }
 
     private TypID InferNewExpr(PassContext pc, NewExpr newExpr)

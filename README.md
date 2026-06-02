@@ -172,9 +172,14 @@ print(greet("Lux"))
 
 ```bash
 lux build        # → out/main.lua
+lux watch        # recompile src/**/*.lux on every change (Ctrl+C to stop)
 lux run          # compile + run via embedded Lua 5.4
 lux repl         # interactive prompt (state survives across inputs)
 ```
+
+`lux watch` recompiles the whole project whenever a `*.lux` file under `src/` changes
+(recursively, debounced), much like `dotnet watch` or `tstl --watch`. Errors are printed
+and the watcher keeps running. Tune the debounce window with `--debounce <ms>` (default 300).
 
 ### Types are optional, inference does the rest
 
@@ -326,6 +331,7 @@ The result is a single self-contained executable: your compiled Lua + KeraLua + 
 | `lux init`               | Scaffold a new project in the current directory          |
 | `lux create <spec>`      | Scaffold from a git template (e.g. `gh:owner/template`)  |
 | `lux build [files...]`   | Compile the project (or specific files) to Lua           |
+| `lux watch`              | Recompile `src/**/*.lux` on every change (debounced)     |
 | `lux run [files...] [-- args]` | Compile and execute via embedded Lua 5.4           |
 | `lux test [filter]`      | Discover and run unit tests (`*_test.lux`, `tests/`)     |
 | `lux repl`               | Interactive REPL with persistent runtime state           |
@@ -359,6 +365,21 @@ lux install          # fetch + link everything
 lux add github:owner/cool-lib@v1
 lux remove cool-lib
 ```
+
+**Monorepos** — when a single repository contains more than one Lux package, point at the
+package's subdirectory. Either append the in-repo path to the host shortcut, or use the
+table form with `subdir`:
+
+```bash
+lux add github:owner/monorepo/packages/math@v1   # path after owner/repo = subdir
+```
+
+```toml
+[dependencies]
+math = { git = "https://github.com/owner/monorepo.git", tag = "v1", subdir = "packages/math" }
+```
+
+Lux sparse-checks only that subdirectory and reads its `lux.toml` for the dependency name.
 
 The package manager is roundtrip-safe with `lux.toml` (preserves formatting + comments on `lux add`/`remove`), supports lifecycle scripts gated behind `--allow-scripts`, and resolves transitive dependencies via per-package `lux.toml` files.
 
