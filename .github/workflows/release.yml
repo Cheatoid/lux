@@ -228,7 +228,10 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    needs: [build, vsix]
+    # Only gated on the compiler builds: a green compiler matrix publishes the
+    # GitHub Release regardless of the VS Code extension. The VSIX is attached
+    # opportunistically afterwards (see attach-vsix) and never blocks the release.
+    needs: [build]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
 
@@ -307,14 +310,49 @@ jobs:
             artifacts/lux-*.tar.gz
             artifacts/lux-*.zip
             artifacts/lux-*.sha256
-            artifacts/lux-lang-*.vsix
-            artifacts/lux-lang-*.vsix.sha256
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  attach-vsix:
+    name: Attach VSIX to GitHub Release
+    # Bonus step: once both the VSIX and the GitHub Release exist, upload the
+    # .vsix as a release asset. Nothing depends on this job, so a VSIX failure
+    # never blocks the release or the marketplace publish — they run in parallel.
+    needs: [vsix, release]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Resolve tag name
+        id: tag
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" && -n "${{ github.event.inputs.tag }}" ]]; then
+            echo "name=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download VSIX
+        uses: actions/download-artifact@v4
+        with:
+          name: lux-vsix
+          path: .
+
+      - name: Upload VSIX to the release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release upload "${{ steps.tag.outputs.name }}" \
+            lux-lang-*.vsix lux-lang-*.vsix.sha256 \
+            --clobber --repo "${{ github.repository }}"
+
   publish-marketplace:
     name: Publish to VS Code Marketplace
-    needs: [vsix, release]
+    # Parallel to the GitHub Release chain: gated only on the VSIX package step,
+    # not on the release job.
+    needs: [vsix]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     steps:
