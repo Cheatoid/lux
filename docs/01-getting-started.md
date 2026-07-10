@@ -15,7 +15,7 @@ Every Lux project uses a `lux.toml` file in its root directory:
 
 ```toml
 name = "my-project"
-target = "lua54"              # lua51, lua52, lua53, lua54, luajit
+target = "5.4"              # 5.1, 5.2, 5.3, 5.4, jit
 source = "src"
 output = "out"
 entry = "src/main.lux"
