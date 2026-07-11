@@ -185,8 +185,20 @@ Full Traits ablehnen, bis ein Use-Case auftaucht, den diese beiden nicht abdecke
   Berührt: Grammatik (`InterfaceDefaultMethodMember`, Parser-Regen), IR (`InterfaceMethodNode.Body`),
   BindDeclare/ResolveNames/ResolveTypeRefs (Bodies + `self`), InferTypes (Body-Check, `DefaultMethods`,
   Impl-Check-Lockerung + Injektion mit self-Param, `override` auch gegen Interfaces), Codegen (`DefaultsToEmit`).
-- **Extension Methods** (in Umsetzung): `extend Type ... end`; Aufruf lowert compile-time zu einem
-  normalen Funktionsaufruf → funktioniert auch auf `number`/`boolean`.
+- **Extension Methods** (umgesetzt): `extend Type ... end` fügt einem bestehenden Typ (Klasse,
+  Interface, `string`/`number`/…) Methoden hinzu. `self` ist die Instanz. Ein Aufruf `recv:m(args)`
+  lowert compile-time zu einem normalen Funktionsaufruf `__ext_<Typ>_m(recv, args)` → funktioniert auf
+  **jedem** Typ inkl. `number`/`boolean` (kein Runtime-Metatable-Trick). Resolution läuft über die
+  Klassen-Basiskette und implementierte/erweiterte Interfaces; Return/Args werden geprüft; Doppel-
+  Definition → `ErrDuplicateExtension`. Berührt: Grammatik (`EXTEND`-Token, `extendDecl`, Parser-Regen),
+  IR (`ExtendDecl`/`ExtensionMethodNode`, `Type.ExtensionMethods`, `MethodCallExpr.ExtensionTargetType`),
+  BindDeclare/ResolveNames/ResolveTypeRefs (Bodies + `self`), InferTypes (Signatur-Vorregistrierung für
+  Forward-Refs, Body-Check, `InferMethodCall`-Fallback), Codegen (Forward-Decls + Bodies + Call-Lowering).
+
+  **Bewusste Grenzen (Folgearbeit):** Extension-Funktionen sind datei-lokal (`local`) → Nutzung über
+  Dateigrenzen hinweg noch nicht unterstützt; `self` eines Primitive-Extensions kann Built-in-Methoden
+  nicht per `:` aufrufen (`str:upper()` ist generell noch nicht typisiert — vorbestehend; `string.upper(self)`
+  funktioniert); Generics auf Extension-Methoden nicht durchgängig verdrahtet.
 
 ---
 

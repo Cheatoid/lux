@@ -410,3 +410,40 @@ export class User
     end
 end
 ```
+
+## Extension Methods
+
+`extend Type ... end` adds methods to an existing type — a class, an interface, or a built-in
+like `string` or `number` — without touching its original definition. Inside an extension method
+`self` is the receiver.
+
+```lux
+extend number
+    function double(): number
+        return self * 2
+    end
+    function clamp(lo: number, hi: number): number
+        if self < lo then return lo end
+        if self > hi then return hi end
+        return self
+    end
+end
+
+extend string
+    function shout(): string
+        return string.upper(self) .. "!"
+    end
+end
+
+print((21):double())        -- 42
+print((5):clamp(0, 3))      -- 3
+print(("hi"):shout())       -- HI!
+```
+
+A call like `receiver:method(args)` lowers at compile time to a plain function call, so extension
+methods work on **every** type — including `number` and `boolean` — with zero runtime overhead and
+no metatable tricks. An extension on a base class or an interface is visible on all its
+subclasses / implementors. A real method always wins over an extension of the same name.
+
+> Notes: extension functions are currently file-local (cross-file use is a work in progress), and
+> `self` on a primitive extension cannot call built-in methods via `:` (use `string.upper(self)`).

@@ -515,6 +515,23 @@ public class ResolveTypeRefsPass() : Pass(PassName, PassScope.PerBuild)
                 _currentScope = prev;
                 break;
             }
+            case ExtendDecl extendDecl:
+            {
+                var prev = _currentScope;
+                _currentScope = ScopeOfDecl(extendDecl.ID);
+                ResolveTypeRef(tt, extendDecl.TargetType);
+                foreach (var method in extendDecl.Methods)
+                {
+                    foreach (var p in method.Parameters)
+                    {
+                        if (p.TypeAnnotation != null) ResolveTypeRef(tt, p.TypeAnnotation);
+                    }
+                    if (method.ReturnType != null) ResolveTypeRef(tt, method.ReturnType);
+                    ResolveStmtListTypes(tt, method.Body);
+                }
+                _currentScope = prev;
+                break;
+            }
             default:
                 throw new InvalidOperationException($"Unknown declaration kind: {decl.GetType().Name}");
         }

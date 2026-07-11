@@ -648,6 +648,25 @@ internal partial class IRVisitor
         return regularDecl;
     }
 
+    public override Node VisitExtendDecl(LuxParser.ExtendDeclContext context)
+    {
+        var target = (TypeRef)Visit(context.typeExpr());
+        var methods = new List<ExtensionMethodNode>();
+        foreach (var m in context.extendMethod())
+        {
+            var isAsync = m.ASYNC() != null;
+            var methodName = NameRefFromTerm(m.NAME());
+            var (parameters, returnType, body, ret) = VisitFuncBodyContent(m.funcBody());
+            var node = new ExtensionMethodNode(methodName, parameters, returnType, body, ret, isAsync, SpanFromCtx(m))
+            {
+                TypeParams = VisitTypeParamListContent(m.funcBody().typeParamList())
+            };
+            methods.Add(node);
+        }
+
+        return new ExtendDecl(NewNodeID, SpanFromCtx(context), target, methods);
+    }
+
     public override Node VisitInterfaceDecl(LuxParser.InterfaceDeclContext context)
     {
         var name = NameRefFromTerm(context.NAME());

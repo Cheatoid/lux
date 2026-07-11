@@ -560,6 +560,30 @@ public sealed class BindDeclarePass() : Pass(PassName, PassScope.PerFile)
                 return true;
             }
 
+            case ExtendDecl extendDecl:
+            {
+                var extScope = pkg.Scopes.NewScope(scope);
+                pkg.Scopes.BindNode(extendDecl.ID, extScope);
+                foreach (var method in extendDecl.Methods)
+                {
+                    var methodScope = pkg.Scopes.NewScope(extScope);
+                    DeclareTypeParams(ctx, methodScope, method.TypeParams);
+                    DeclareSymbol(ctx, methodScope, "self", SymbolKind.Variable, extendDecl.ID);
+                    foreach (var param in method.Parameters)
+                    {
+                        pkg.Scopes.BindNode(param.ID, methodScope);
+                        DeclareSymbol(ctx, methodScope, param.Name.Name, SymbolKind.Variable, param.ID);
+                        if (param.DefaultValue != null && !BindExprScopes(ctx, param.DefaultValue, methodScope))
+                            return false;
+                    }
+                    if (!BindStmtListScopes(ctx, method.Body, methodScope))
+                        return false;
+                    if (method.ReturnStmt != null && !BindStmtScopes(ctx, method.ReturnStmt, methodScope))
+                        return false;
+                }
+                return true;
+            }
+
             default:
                 throw new InvalidOperationException($"Unsupported declaration type: {decl.GetType().Name}");
         }

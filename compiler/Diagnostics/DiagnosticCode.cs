@@ -171,6 +171,11 @@ public enum DiagnosticCode
     [Format("Function with return type '{0}' must return a value on all code paths")]
     ErrMissingReturn = 0x200E,
 
+    [Level(DiagnosticLevel.Error)]
+    [Category(DiagnosticCategory.Type)]
+    [Format("Extension method '{0}' is already defined on type '{1}'")]
+    ErrDuplicateExtension = 0x200F,
+
     #endregion
 
     #region Module

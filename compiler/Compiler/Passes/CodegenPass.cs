@@ -35,6 +35,10 @@ public sealed class CodegenPass() : Pass(PassName, PassScope.PerBuild, true)
         var exportedNames = new List<string>();
         CollectExportNames(ctx, pkg, file.Hir.Body, exportedNames);
 
+        // Forward-declare extension functions at the top so calls anywhere in the file resolve,
+        // regardless of where the `extend` block appears.
+        EmitExtensionForwardDecls(ctx, gen, file.Hir.Body);
+
         EmitStmtList(ctx, pkg, gen, file.Hir.Body);
 
         if (exportedNames.Count > 0)
@@ -249,6 +253,9 @@ public sealed class CodegenPass() : Pass(PassName, PassScope.PerBuild, true)
                     EmitClassDecl(ctx, pkg, gen, cd);
                 break;
             case InterfaceDecl:
+                break;
+            case ExtendDecl ed:
+                EmitExtendDecl(ctx, pkg, gen, ed);
                 break;
             case MatchStmt ms:
                 EmitMatchStmt(ctx, pkg, gen, ms);
@@ -2077,12 +2084,73 @@ public sealed class CodegenPass() : Pass(PassName, PassScope.PerBuild, true)
 
     private void EmitMethodCall(PassContext ctx, PackageContext pkg, LuaGenerator gen, MethodCallExpr mc)
     {
+        // Extension method: lower `receiver:m(args)` to `__ext_<type>_m(receiver, args)`.
+        if (mc.ExtensionTargetType is { } extTarget)
+        {
+            gen.Write(ExtensionFnName(ctx, extTarget, mc.MethodName.Name));
+            gen.Write("(");
+            EmitExpr(ctx, pkg, gen, mc.Object);
+            if (mc.Arguments.Count > 0)
+            {
+                gen.Write(", ");
+                EmitExprList(ctx, pkg, gen, mc.Arguments);
+            }
+            gen.Write(")");
+            return;
+        }
+
         EmitExpr(ctx, pkg, gen, mc.Object);
         gen.Write(":");
         gen.Write(mc.MethodName.Name);
         gen.Write("(");
         EmitExprList(ctx, pkg, gen, mc.Arguments);
         gen.Write(")");
+    }
+
+    private static string ExtensionFnName(PassContext ctx, TypID targetType, string method)
+    {
+        ctx.Types.GetByID(targetType, out var t);
+        var key = t != null ? t.Key.Value : targetType.ToString();
+        var sanitized = new string(key.Select(c => char.IsLetterOrDigit(c) ? c : '_').ToArray());
+        return $"__ext_{sanitized}_{method}";
+    }
+
+    private void EmitExtensionForwardDecls(PassContext ctx, LuaGenerator gen, List<Stmt> stmts)
+    {
+        var names = new List<string>();
+        foreach (var stmt in stmts)
+            if (stmt is ExtendDecl ed && ed.TargetType.ResolvedType != TypID.Invalid)
+                foreach (var m in ed.Methods)
+                    names.Add(ExtensionFnName(ctx, ed.TargetType.ResolvedType, m.Name.Name));
+
+        if (names.Count == 0) return;
+        gen.Write("local ");
+        gen.Write(string.Join(", ", names));
+        gen.NewLine();
+        gen.WriteSemicolon();
+    }
+
+    private void EmitExtendDecl(PassContext ctx, PackageContext pkg, LuaGenerator gen, ExtendDecl ed)
+    {
+        if (ed.TargetType.ResolvedType == TypID.Invalid) return;
+        foreach (var m in ed.Methods)
+        {
+            gen.Write("function ");
+            gen.Write(ExtensionFnName(ctx, ed.TargetType.ResolvedType, m.Name.Name));
+            gen.Write("(self");
+            if (m.Parameters.Count > 0)
+            {
+                gen.Write(", ");
+                EmitParamList(ctx, pkg, gen, m.Parameters);
+            }
+            gen.Write(")");
+            gen.NewLine();
+            gen.Indent();
+            EmitFuncBodyContent(ctx, pkg, gen, m.Parameters, m.Body, m.ReturnStmt, m.IsAsync);
+            gen.Dedent();
+            gen.WriteLine("end");
+            gen.WriteSemicolon();
+        }
     }
 
     private void EmitTableConstructor(PassContext ctx, PackageContext pkg, LuaGenerator gen, TableConstructorExpr tc)

@@ -105,6 +105,13 @@ public sealed class MethodCallExpr(NodeID id, TextSpan span, Expr @object, NameR
     public Expr Object { get; } = @object;
     public NameRef MethodName { get; } = methodName;
     public List<Expr> Arguments { get; } = arguments;
+
+    /// <summary>
+    /// Set by type inference when this call resolves to an extension method: the type the
+    /// extension was declared on. Codegen lowers the call to a plain function invocation
+    /// <c>fn(receiver, args...)</c> instead of a Lua <c>:</c> method call.
+    /// </summary>
+    public TypID? ExtensionTargetType { get; set; }
 }
 
 public sealed class NonNilAssertExpr(NodeID id, TextSpan span, Expr inner) : Expr(id, span)

@@ -233,6 +233,13 @@ public interface ILuxVisitor<Result> : IParseTreeVisitor<Result> {
 	/// <return>The visitor result.</return>
 	Result VisitInterfaceDeclStat([NotNull] LuxParser.InterfaceDeclStatContext context);
 	/// <summary>
+	/// Visit a parse tree produced by the <c>ExtendDeclStat</c>
+	/// labeled alternative in <see cref="LuxParser.stmt"/>.
+	/// </summary>
+	/// <param name="context">The parse tree.</param>
+	/// <return>The visitor result.</return>
+	Result VisitExtendDeclStat([NotNull] LuxParser.ExtendDeclStatContext context);
+	/// <summary>
 	/// Visit a parse tree produced by the <c>SuperCallStat</c>
 	/// labeled alternative in <see cref="LuxParser.stmt"/>.
 	/// </summary>
@@ -627,6 +634,18 @@ public interface ILuxVisitor<Result> : IParseTreeVisitor<Result> {
 	/// <param name="context">The parse tree.</param>
 	/// <return>The visitor result.</return>
 	Result VisitInterfaceMethodMember([NotNull] LuxParser.InterfaceMethodMemberContext context);
+	/// <summary>
+	/// Visit a parse tree produced by <see cref="LuxParser.extendDecl"/>.
+	/// </summary>
+	/// <param name="context">The parse tree.</param>
+	/// <return>The visitor result.</return>
+	Result VisitExtendDecl([NotNull] LuxParser.ExtendDeclContext context);
+	/// <summary>
+	/// Visit a parse tree produced by <see cref="LuxParser.extendMethod"/>.
+	/// </summary>
+	/// <param name="context">The parse tree.</param>
+	/// <return>The visitor result.</return>
+	Result VisitExtendMethod([NotNull] LuxParser.ExtendMethodContext context);
 	/// <summary>
 	/// Visit a parse tree produced by the <c>ExportFunction</c>
 	/// labeled alternative in <see cref="LuxParser.exportStat"/>.

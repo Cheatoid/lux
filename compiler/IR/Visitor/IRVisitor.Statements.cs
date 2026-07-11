@@ -99,6 +99,8 @@ internal partial class IRVisitor
     }
     public override Node VisitInterfaceDeclStat(LuxParser.InterfaceDeclStatContext context) => Visit(context.interfaceDecl());
 
+    public override Node VisitExtendDeclStat(LuxParser.ExtendDeclStatContext context) => Visit(context.extendDecl());
+
     public override Node VisitMatchStat(LuxParser.MatchStatContext context)
     {
         var scrutinee = (Expr)Visit(context.expr());

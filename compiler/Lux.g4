@@ -86,6 +86,7 @@ stmt
     | matchStat                                                 # MatchStat_
     | classDecl                                                 # ClassDeclStat
     | interfaceDecl                                             # InterfaceDeclStat
+    | extendDecl                                                # ExtendDeclStat
     | SUPER LPAREN exprList? RPAREN                             # SuperCallStat
     ;
 
@@ -350,6 +351,18 @@ interfaceMember
     : annotationList NAME typeAnnotation                           # InterfaceFieldMember
     | annotationList ASYNC? FUNCTION NAME funcBody                 # InterfaceDefaultMethodMember
     | annotationList ASYNC? FUNCTION NAME funcSignature            # InterfaceMethodMember
+    ;
+
+// --- Extension Blocks ---
+// Adds methods to an existing type (class, interface or built-in like string/number).
+// The method call lowers at compile time to a plain function call, so it works on any type.
+
+extendDecl
+    : EXTEND typeExpr extendMethod* END
+    ;
+
+extendMethod
+    : ASYNC? FUNCTION NAME funcBody
     ;
 
 exportStat
@@ -912,6 +925,7 @@ ABSTRACT    : 'abstract';
 CLASS       : 'class';
 INTERFACE   : 'interface';
 EXTENDS     : 'extends';
+EXTEND      : 'extend';
 IMPLEMENTS  : 'implements';
 CONSTRUCTOR : 'constructor';
 STATIC      : 'static';

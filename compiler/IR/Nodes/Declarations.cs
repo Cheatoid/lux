@@ -137,6 +137,20 @@ public sealed class ClassDecl(
     public List<Annotation> Annotations { get; set; } = [];
 }
 
+/// <summary>
+/// An <c>extend Type ... end</c> block that adds methods to an existing type (class,
+/// interface, or a built-in like <c>string</c>/<c>number</c>). Extension method calls lower
+/// at compile time to a plain function call, so they work on every type — including primitives.
+/// </summary>
+public sealed class ExtendDecl(
+    NodeID id, TextSpan span,
+    TypeRef targetType, List<ExtensionMethodNode> methods
+) : Decl(id, span)
+{
+    public TypeRef TargetType { get; } = targetType;
+    public List<ExtensionMethodNode> Methods { get; } = methods;
+}
+
 public sealed class InterfaceDecl(
     NodeID id, TextSpan span,
     NameRef name, List<NameRef> baseInterfaces,

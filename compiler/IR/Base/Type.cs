@@ -49,6 +49,13 @@ public class Type(TypeKind kind)
     public TypeKind Kind { get; } = kind;
 
     /// <summary>
+    /// Extension methods registered on this type via an <c>extend Type</c> block (name →
+    /// signature, self-prefixed). Consulted when a <c>receiver:method(...)</c> call finds no
+    /// real member; the call then lowers to a plain function invocation at codegen.
+    /// </summary>
+    public Dictionary<string, FunctionType> ExtensionMethods { get; } = new();
+
+    /// <summary>
     /// The type key. This is a string representation of the type, and is used to identify the type in the type table.
     /// </summary>
     public TypeKey Key => field ??= GenerateNewKey();

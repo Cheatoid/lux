@@ -21,6 +21,8 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
     /// </summary>
     private readonly HashSet<NodeID> _resolvedClassDecls = [];
     private readonly HashSet<NodeID> _resolvedInterfaceDecls = [];
+    private readonly HashSet<NodeID> _resolvedExtendDecls = [];
+    private readonly HashSet<NodeID> _registeredExtendDecls = [];
 
     /// <summary>
     /// Identifies a value location for flow-narrowing. Either a plain symbol (NameExpr) or a chain of
@@ -81,6 +83,10 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
             {
                 var fileCtx = MakeFileContext(context, pkg, file);
                 _narrowed.Clear();
+                // Register extension-method signatures before resolving bodies so a call may
+                // precede the `extend` block that declares it (as with imported extensions).
+                foreach (var stmt in file.Hir.Body)
+                    if (stmt is ExtendDecl ed) RegisterExtensionSignatures(fileCtx, ed);
                 ResolveStmts(fileCtx, file.Hir.Body);
                 if (file.Hir.Return != null) ResolveStmt(fileCtx, file.Hir.Return);
             }
@@ -171,6 +177,9 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
                     break;
                 case InterfaceDecl id:
                     ResolveInterfaceDecl(pc, id);
+                    break;
+                case ExtendDecl ed:
+                    ResolveExtendDecl(pc, ed);
                     break;
                 case DeclareVariableDecl dvd:
                     ResolveDecl(pc, dvd);
@@ -429,6 +438,9 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
                 break;
             case InterfaceDecl id:
                 ResolveInterfaceDecl(pc, id);
+                break;
+            case ExtendDecl ed:
+                ResolveExtendDecl(pc, ed);
                 break;
             default:
                 throw new InvalidOperationException($"Unknown declaration kind: {decl.GetType().Name}");
@@ -841,6 +853,118 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
                 if (method.IsAsync) _asyncDepth--;
             }
         }
+    }
+
+    private Type? ResolveExtendTarget(PassContext pc, ExtendDecl ed)
+    {
+        return ed.TargetType.ResolvedType == TypID.Invalid ? null : GetType(pc, ed.TargetType.ResolvedType);
+    }
+
+    /// <summary>
+    /// Registers each extension method's signature (with an implicit <c>self</c> of the target
+    /// type) on the extended type, so <c>receiver:method(...)</c> resolves. Runs before bodies
+    /// are resolved so a call may precede its <c>extend</c> block.
+    /// </summary>
+    private void RegisterExtensionSignatures(PassContext pc, ExtendDecl ed)
+    {
+        if (!_registeredExtendDecls.Add(ed.ID)) return;
+        var target = ResolveExtendTarget(pc, ed);
+        if (target == null) return;
+
+        foreach (var method in ed.Methods)
+        {
+            var methodParams = new List<Tuple<string, Type>> { new("self", target) };
+            var isVararg = false;
+            Type? varargType = null;
+            var defaultIndices = new List<int>();
+            for (var i = 0; i < method.Parameters.Count; i++)
+            {
+                var p = method.Parameters[i];
+                var t = ResolveParamType(pc, p);
+                if (p.IsVararg) { isVararg = true; varargType = t.Kind == TypeKind.PrimitiveAny ? null : t; }
+                else { methodParams.Add(new Tuple<string, Type>(p.Name.Name, t)); }
+                if (p.DefaultValue != null) defaultIndices.Add(i + 1); // +1: self shifts indices
+            }
+            var retType = method.ReturnType != null && method.ReturnType.ResolvedType != TypID.Invalid
+                ? GetType(pc, method.ReturnType.ResolvedType) : pc.Types.PrimNil;
+            var ft = (FunctionType)GetType(pc, pc.Types.FuncOf(methodParams, retType, isVararg, varargType,
+                defaultIndices.Count > 0 ? defaultIndices : null, method.IsAsync));
+
+            if (target.ExtensionMethods.ContainsKey(method.Name.Name))
+                pc.Diag.Report(method.Name.Span, DiagnosticCode.ErrDuplicateExtension,
+                    method.Name.Name, TypeName(pc, target.ID));
+            else
+                target.ExtensionMethods[method.Name.Name] = ft;
+        }
+    }
+
+    /// <summary>Type-checks extension bodies with <c>self</c> bound to the extended type.</summary>
+    private void ResolveExtendDecl(PassContext pc, ExtendDecl ed)
+    {
+        if (!_resolvedExtendDecls.Add(ed.ID)) return;
+        var target = ResolveExtendTarget(pc, ed);
+        if (target == null) return;
+
+        foreach (var (selfId, selfSym) in pc.Pkg!.Syms.ByID)
+            if (selfSym.Name == "self" && selfSym.DeclaringNode == ed.ID && selfSym.Type == TypID.Invalid)
+                pc.Pkg.Syms.SetType(selfId, target.ID);
+
+        foreach (var method in ed.Methods)
+        {
+            foreach (var p in method.Parameters)
+            {
+                var t = ResolveParamType(pc, p);
+                if (p.Name.Sym != SymID.Invalid) pc.Pkg!.Syms.SetType(p.Name.Sym, t.ID);
+                if (p.DefaultValue != null) SynthesizeExpr(pc, p.DefaultValue);
+            }
+            var retType = method.ReturnType != null && method.ReturnType.ResolvedType != TypID.Invalid
+                ? GetType(pc, method.ReturnType.ResolvedType) : pc.Types.PrimNil;
+
+            if (method.IsAsync) _asyncDepth++;
+            ResolveStmts(pc, method.Body);
+            if (method.ReturnStmt != null) ResolveStmt(pc, method.ReturnStmt);
+
+            var collected = CollectReturnTypes(pc, method.Body);
+            if (method.ReturnStmt != null)
+                collected.Add((ComputeReturnType(pc, method.ReturnStmt.Values), method.ReturnStmt.Span));
+            foreach (var (typ, span) in collected)
+                EnsureAssignable(pc, span, retType.ID, typ);
+            if (ReturnTypeRequiresValue(pc, retType.ID) && !FunctionBodyAlwaysReturns(method.Body, method.ReturnStmt))
+            {
+                var span = method.ReturnType?.Span ?? method.Name.Span;
+                pc.Diag.Report(span, DiagnosticCode.ErrMissingReturn, TypeName(pc, retType.ID));
+            }
+            if (method.IsAsync) _asyncDepth--;
+        }
+    }
+
+    /// <summary>
+    /// Finds an extension method for <paramref name="name"/> on <paramref name="objType"/>, its
+    /// base classes, or its implemented/extended interfaces. Returns the (self-prefixed)
+    /// signature and the type the extension was declared on.
+    /// </summary>
+    private (FunctionType?, Type?) ResolveExtensionMethod(Type objType, string name)
+    {
+        if (objType.ExtensionMethods.TryGetValue(name, out var direct)) return (direct, objType);
+
+        if (objType is ClassType ct)
+        {
+            for (var cur = ct.BaseClass; cur != null; cur = cur.BaseClass)
+                if (cur.ExtensionMethods.TryGetValue(name, out var bft)) return (bft, cur);
+            foreach (var iface in ct.Interfaces)
+            {
+                if (iface.ExtensionMethods.TryGetValue(name, out var ift)) return (ift, iface);
+                foreach (var b in AllBaseInterfaces(iface))
+                    if (b.ExtensionMethods.TryGetValue(name, out var bift)) return (bift, b);
+            }
+        }
+        else if (objType is InterfaceType it)
+        {
+            foreach (var b in AllBaseInterfaces(it))
+                if (b.ExtensionMethods.TryGetValue(name, out var bift)) return (bift, b);
+        }
+
+        return (null, null);
     }
 
     /// <summary>
@@ -2108,6 +2232,17 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
         var methodFn = ResolveMethodOnType(objType, mc.MethodName.Name);
         if (methodFn == null)
         {
+            // Fall back to an extension method: it lowers to a plain call `fn(receiver, args)`.
+            var (extFn, extTarget) = ResolveExtensionMethod(objType, mc.MethodName.Name);
+            if (extFn != null)
+            {
+                mc.ExtensionTargetType = extTarget!.ID;
+                var extArgs = new List<TypID>(argTypes.Count + 1) { objTyp };
+                extArgs.AddRange(argTypes);
+                CheckCallArguments(pc, mc.Span, extFn, extArgs);
+                return extFn.ReturnType.ID;
+            }
+
             if (objType.Kind != TypeKind.PrimitiveAny)
             {
                 pc.Diag.Report(mc.MethodName.Span, DiagnosticCode.ErrTypeNotIndexable,

@@ -370,6 +370,22 @@ public sealed class ResolveNamesPass() : Pass(PassName, PassScope.PerFile)
                 }
                 break;
             }
+            case ExtendDecl extendDecl:
+            {
+                foreach (var method in extendDecl.Methods)
+                {
+                    foreach (var p in method.Parameters)
+                    {
+                        pkg.Scopes.EnclosingScope(p.ID, out var pScope);
+                        ResolveNameRef(pc, p.Name, pScope, pkg);
+                        if (p.DefaultValue != null) ResolveExprNames(pc, p.DefaultValue, pkg);
+                    }
+                    ResolveStmtListNames(pc, method.Body, pkg);
+                    if (method.ReturnStmt != null)
+                        ResolveStmtNames(pc, method.ReturnStmt, pkg);
+                }
+                break;
+            }
         }
     }
 

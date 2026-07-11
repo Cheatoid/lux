@@ -375,6 +375,18 @@ public interface ILuxListener : IParseTreeListener {
 	/// <param name="context">The parse tree.</param>
 	void ExitInterfaceDeclStat([NotNull] LuxParser.InterfaceDeclStatContext context);
 	/// <summary>
+	/// Enter a parse tree produced by the <c>ExtendDeclStat</c>
+	/// labeled alternative in <see cref="LuxParser.stmt"/>.
+	/// </summary>
+	/// <param name="context">The parse tree.</param>
+	void EnterExtendDeclStat([NotNull] LuxParser.ExtendDeclStatContext context);
+	/// <summary>
+	/// Exit a parse tree produced by the <c>ExtendDeclStat</c>
+	/// labeled alternative in <see cref="LuxParser.stmt"/>.
+	/// </summary>
+	/// <param name="context">The parse tree.</param>
+	void ExitExtendDeclStat([NotNull] LuxParser.ExtendDeclStatContext context);
+	/// <summary>
 	/// Enter a parse tree produced by the <c>SuperCallStat</c>
 	/// labeled alternative in <see cref="LuxParser.stmt"/>.
 	/// </summary>
@@ -1044,6 +1056,26 @@ public interface ILuxListener : IParseTreeListener {
 	/// </summary>
 	/// <param name="context">The parse tree.</param>
 	void ExitInterfaceMethodMember([NotNull] LuxParser.InterfaceMethodMemberContext context);
+	/// <summary>
+	/// Enter a parse tree produced by <see cref="LuxParser.extendDecl"/>.
+	/// </summary>
+	/// <param name="context">The parse tree.</param>
+	void EnterExtendDecl([NotNull] LuxParser.ExtendDeclContext context);
+	/// <summary>
+	/// Exit a parse tree produced by <see cref="LuxParser.extendDecl"/>.
+	/// </summary>
+	/// <param name="context">The parse tree.</param>
+	void ExitExtendDecl([NotNull] LuxParser.ExtendDeclContext context);
+	/// <summary>
+	/// Enter a parse tree produced by <see cref="LuxParser.extendMethod"/>.
+	/// </summary>
+	/// <param name="context">The parse tree.</param>
+	void EnterExtendMethod([NotNull] LuxParser.ExtendMethodContext context);
+	/// <summary>
+	/// Exit a parse tree produced by <see cref="LuxParser.extendMethod"/>.
+	/// </summary>
+	/// <param name="context">The parse tree.</param>
+	void ExitExtendMethod([NotNull] LuxParser.ExtendMethodContext context);
 	/// <summary>
 	/// Enter a parse tree produced by the <c>ExportFunction</c>
 	/// labeled alternative in <see cref="LuxParser.exportStat"/>.

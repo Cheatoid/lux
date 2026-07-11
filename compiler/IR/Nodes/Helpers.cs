@@ -170,6 +170,21 @@ public sealed class ClassAccessorNode(
     public Lux.Doc.DocComment? Doc { get; set; }
 }
 
+/// <summary>A method declared inside an <c>extend Type</c> block. Its <c>self</c> is the extended type.</summary>
+public sealed class ExtensionMethodNode(
+    NameRef name, List<Parameter> parameters, TypeRef? returnType,
+    List<Stmt> body, ReturnStmt? returnStmt, bool isAsync, TextSpan span)
+{
+    public NameRef Name { get; } = name;
+    public List<Parameter> Parameters { get; } = parameters;
+    public TypeRef? ReturnType { get; } = returnType;
+    public List<Stmt> Body { get; } = body;
+    public ReturnStmt? ReturnStmt { get; } = returnStmt;
+    public bool IsAsync { get; } = isAsync;
+    public TextSpan Span { get; } = span;
+    public List<TypeParamDef> TypeParams { get; set; } = [];
+}
+
 public sealed class InterfaceFieldNode(NameRef name, TypeRef typeAnnotation, TextSpan span)
 {
     public NameRef Name { get; } = name;
