@@ -2201,11 +2201,11 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
         var (mcFns, mcSides) = CollectMethodOverloads(objType, mc.MethodName.Name, staticOnly: false);
         if (mcFns.Count > 1)
         {
-            var picked = PickOverload(pc, mcFns, mcSides, argTypes,
-                prefixSelf: objType is ClassType);
+            var ovPrefixSelf = objType is ClassType || (mcFns.Count > 0 && StartsWithSelfParam(mcFns[0]));
+            var picked = PickOverload(pc, mcFns, mcSides, argTypes, prefixSelf: ovPrefixSelf);
             if (picked != null)
             {
-                var pickedArgs = objType is ClassType
+                var pickedArgs = ovPrefixSelf
                     ? new List<TypID>(argTypes.Count + 1) { objTyp }
                     : new List<TypID>(argTypes.Count);
                 pickedArgs.AddRange(argTypes);
@@ -2236,13 +2236,23 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
             return pc.Types.PrimAny.ID;
         }
 
-        var fullArgs = objType is ClassType
+        // The `:` call passes the receiver as the implicit `self`. Prepend it when the receiver
+        // is a class (self is synthetic) OR the method's signature declares a leading `self`
+        // parameter (e.g. `declare interface IoFile function flush(self: any): any`), so the
+        // explicit self is satisfied by the receiver instead of counting as a missing argument.
+        var prefixSelf = objType is ClassType || StartsWithSelfParam(methodFn);
+        var fullArgs = prefixSelf
             ? new List<TypID>(argTypes.Count + 1) { objTyp }
             : new List<TypID>(argTypes.Count);
         fullArgs.AddRange(argTypes);
         CheckCallArguments(pc, mc.Span, methodFn, fullArgs);
 
         return methodFn.ReturnType.ID;
+    }
+
+    private static bool StartsWithSelfParam(FunctionType ft)
+    {
+        return ft.ParamNames.Count > 0 && ft.ParamNames[0] == "self";
     }
 
     private static FunctionType? ResolveMethodOnType(Type baseType, string methodName)
