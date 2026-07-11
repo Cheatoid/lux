@@ -383,6 +383,14 @@ public sealed class ClassType(
     public List<TypeParameterType> TypeParams { get; } = new();
 
     /// <summary>
+    /// Interface default methods this class inherits and that codegen must materialise on
+    /// the class table (name → the interface method node whose body is copied). Populated
+    /// when the class implements an interface with a default it neither overrides nor
+    /// inherits a concrete implementation of from a base class.
+    /// </summary>
+    public Dictionary<string, InterfaceMethodNode> DefaultsToEmit { get; } = new();
+
+    /// <summary>
     /// All overloads for each method name (instance + static). Insertion-ordered;
     /// the entry in <see cref="Methods"/>/<see cref="StaticMethods"/> mirrors the
     /// last-inserted overload (the "primary"). Resolution that needs to consider
@@ -435,6 +443,18 @@ public sealed class InterfaceType(
     public Dictionary<string, StructType.Field> Fields { get; } = new();
     public Dictionary<string, FunctionType> Methods { get; } = new();
     public List<TypeParameterType> TypeParams { get; } = new();
+
+    /// <summary>
+    /// Names of methods that carry a default implementation (a body). Implementing classes
+    /// inherit these unless they override them, so they are not required to be implemented.
+    /// </summary>
+    public HashSet<string> DefaultMethods { get; } = new();
+
+    /// <summary>
+    /// The AST node for each default method, keyed by name — the source of the body that
+    /// codegen copies into implementing classes that do not override it.
+    /// </summary>
+    public Dictionary<string, InterfaceMethodNode> DefaultMethodNodes { get; } = new();
 
     /// <summary>
     /// All overloads per method name; the entry in <see cref="Methods"/> mirrors

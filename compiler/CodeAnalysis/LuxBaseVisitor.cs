@@ -965,6 +965,17 @@ public partial class LuxBaseVisitor<Result> : AbstractParseTreeVisitor<Result>, 
 	/// <return>The visitor result.</return>
 	public virtual Result VisitInterfaceFieldMember([NotNull] LuxParser.InterfaceFieldMemberContext context) { return VisitChildren(context); }
 	/// <summary>
+	/// Visit a parse tree produced by the <c>InterfaceDefaultMethodMember</c>
+	/// labeled alternative in <see cref="LuxParser.interfaceMember"/>.
+	/// <para>
+	/// The default implementation returns the result of calling <see cref="AbstractParseTreeVisitor{Result}.VisitChildren(IRuleNode)"/>
+	/// on <paramref name="context"/>.
+	/// </para>
+	/// </summary>
+	/// <param name="context">The parse tree.</param>
+	/// <return>The visitor result.</return>
+	public virtual Result VisitInterfaceDefaultMethodMember([NotNull] LuxParser.InterfaceDefaultMethodMemberContext context) { return VisitChildren(context); }
+	/// <summary>
 	/// Visit a parse tree produced by the <c>InterfaceMethodMember</c>
 	/// labeled alternative in <see cref="LuxParser.interfaceMember"/>.
 	/// <para>

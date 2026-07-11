@@ -614,6 +614,13 @@ public interface ILuxVisitor<Result> : IParseTreeVisitor<Result> {
 	/// <return>The visitor result.</return>
 	Result VisitInterfaceFieldMember([NotNull] LuxParser.InterfaceFieldMemberContext context);
 	/// <summary>
+	/// Visit a parse tree produced by the <c>InterfaceDefaultMethodMember</c>
+	/// labeled alternative in <see cref="LuxParser.interfaceMember"/>.
+	/// </summary>
+	/// <param name="context">The parse tree.</param>
+	/// <return>The visitor result.</return>
+	Result VisitInterfaceDefaultMethodMember([NotNull] LuxParser.InterfaceDefaultMethodMemberContext context);
+	/// <summary>
 	/// Visit a parse tree produced by the <c>InterfaceMethodMember</c>
 	/// labeled alternative in <see cref="LuxParser.interfaceMember"/>.
 	/// </summary>

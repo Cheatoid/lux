@@ -181,7 +181,8 @@ public sealed class InterfaceFieldNode(NameRef name, TypeRef typeAnnotation, Tex
 
 public sealed class InterfaceMethodNode(
     NameRef name, List<Parameter> parameters, TypeRef? returnType,
-    bool isAsync, TextSpan span)
+    bool isAsync, TextSpan span,
+    List<Stmt>? body = null, ReturnStmt? returnStmt = null)
 {
     public NameRef Name { get; } = name;
     public List<Parameter> Parameters { get; } = parameters;
@@ -191,4 +192,13 @@ public sealed class InterfaceMethodNode(
     public List<TypeParamDef> TypeParams { get; set; } = [];
     public List<Annotation> Annotations { get; set; } = [];
     public Lux.Doc.DocComment? Doc { get; set; }
+
+    /// <summary>
+    /// The default-implementation body, or <c>null</c> for a plain abstract signature.
+    /// A method with a body is a <em>default</em>: implementing classes inherit it unless
+    /// they override it, so it does not have to be implemented.
+    /// </summary>
+    public List<Stmt>? Body { get; } = body;
+    public ReturnStmt? ReturnStmt { get; } = returnStmt;
+    public bool IsDefault => Body != null;
 }

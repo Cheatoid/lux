@@ -489,6 +489,29 @@ public sealed class CodegenPass() : Pass(PassName, PassScope.PerBuild, true)
             gen.WriteSemicolon();
         }
 
+        // Inherited interface default methods: materialise their bodies on this class.
+        if (pkg.Syms.GetByID(cd.Name.Sym, out var clsSym)
+            && ctx.Types.GetByID(clsSym.Type, out var clsT) && clsT is ClassType classType
+            && classType.DefaultsToEmit.Count > 0)
+        {
+            foreach (var (mName, node) in classType.DefaultsToEmit.OrderBy(kv => kv.Key, StringComparer.Ordinal))
+            {
+                gen.Write("function ");
+                gen.Write(className);
+                gen.Write(":");
+                gen.Write(mName);
+                gen.Write("(");
+                EmitParamList(ctx, pkg, gen, node.Parameters);
+                gen.Write(")");
+                gen.NewLine();
+                gen.Indent();
+                EmitFuncBodyContent(ctx, pkg, gen, node.Parameters, node.Body!, node.ReturnStmt, node.IsAsync);
+                gen.Dedent();
+                gen.WriteLine("end");
+                gen.WriteSemicolon();
+            }
+        }
+
         // Static methods
         foreach (var method in cd.Methods)
         {

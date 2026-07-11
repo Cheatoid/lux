@@ -695,6 +695,19 @@ internal partial class IRVisitor
                     methods.Add(imNode);
                     break;
                 }
+                case LuxParser.InterfaceDefaultMethodMemberContext method:
+                {
+                    var isAsync = method.ASYNC() != null;
+                    var methodName = NameRefFromTerm(method.NAME());
+                    var (parameters, returnType, body, ret) = VisitFuncBodyContent(method.funcBody());
+                    var imTypeParams = VisitTypeParamListContent(method.funcBody().typeParamList());
+                    var imNode = new InterfaceMethodNode(methodName, parameters, returnType, isAsync,
+                        SpanFromCtx(method), body, ret);
+                    imNode.TypeParams = imTypeParams;
+                    imNode.Annotations = VisitAnnotationListContent(method.annotationList());
+                    methods.Add(imNode);
+                    break;
+                }
             }
         }
 

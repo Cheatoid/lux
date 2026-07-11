@@ -177,6 +177,17 @@ Overlap mit Interfaces (Interface mit Default-Methoden ≈ Trait).
 
 Full Traits ablehnen, bis ein Use-Case auftaucht, den diese beiden nicht abdecken.
 
+**Entscheidung / umgesetzt (statt Full Traits):**
+- **Interface Default-Methoden** (umgesetzt): Interface-Methode *mit* Body = Default; implementierende
+  Klassen erben sie, `override` opt-out. `self` ist die Instanz; Defaults dürfen andere
+  (abstrakte/Default-)Methoden aufrufen und Interface-Felder lesen; transitiv über `extends` vererbt.
+  Codegen kopiert den Body zur Compile-Zeit auf jede nicht-überschreibende Klasse (keine Runtime-Library).
+  Berührt: Grammatik (`InterfaceDefaultMethodMember`, Parser-Regen), IR (`InterfaceMethodNode.Body`),
+  BindDeclare/ResolveNames/ResolveTypeRefs (Bodies + `self`), InferTypes (Body-Check, `DefaultMethods`,
+  Impl-Check-Lockerung + Injektion mit self-Param, `override` auch gegen Interfaces), Codegen (`DefaultsToEmit`).
+- **Extension Methods** (in Umsetzung): `extend Type ... end`; Aufruf lowert compile-time zu einem
+  normalen Funktionsaufruf → funktioniert auch auf `number`/`boolean`.
+
 ---
 
 ## Priorisierung

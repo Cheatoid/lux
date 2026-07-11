@@ -535,6 +535,28 @@ public sealed class BindDeclarePass() : Pass(PassName, PassScope.PerFile)
                 var ifaceScope = pkg.Scopes.NewScope(scope);
                 pkg.Scopes.BindNode(interfaceDecl.ID, ifaceScope);
                 DeclareTypeParams(ctx, ifaceScope, interfaceDecl.TypeParams);
+
+                // Default methods carry a body: give each its own scope with an implicit
+                // `self` (typed as the interface in InferTypes) and its parameters, then bind
+                // the body — the same shape as a class instance method.
+                foreach (var method in interfaceDecl.Methods)
+                {
+                    if (!method.IsDefault) continue;
+                    var methodScope = pkg.Scopes.NewScope(ifaceScope);
+                    DeclareTypeParams(ctx, methodScope, method.TypeParams);
+                    DeclareSymbol(ctx, methodScope, "self", SymbolKind.Variable, interfaceDecl.ID);
+                    foreach (var param in method.Parameters)
+                    {
+                        pkg.Scopes.BindNode(param.ID, methodScope);
+                        DeclareSymbol(ctx, methodScope, param.Name.Name, SymbolKind.Variable, param.ID);
+                        if (param.DefaultValue != null && !BindExprScopes(ctx, param.DefaultValue, methodScope))
+                            return false;
+                    }
+                    if (!BindStmtListScopes(ctx, method.Body!, methodScope))
+                        return false;
+                    if (method.ReturnStmt != null && !BindStmtScopes(ctx, method.ReturnStmt, methodScope))
+                        return false;
+                }
                 return true;
             }
 

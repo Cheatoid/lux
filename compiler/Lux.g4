@@ -348,6 +348,7 @@ classRef
 
 interfaceMember
     : annotationList NAME typeAnnotation                           # InterfaceFieldMember
+    | annotationList ASYNC? FUNCTION NAME funcBody                 # InterfaceDefaultMethodMember
     | annotationList ASYNC? FUNCTION NAME funcSignature            # InterfaceMethodMember
     ;
 

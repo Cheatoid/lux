@@ -510,6 +510,7 @@ public class ResolveTypeRefsPass() : Pass(PassName, PassScope.PerBuild)
                         if (p.TypeAnnotation != null) ResolveTypeRef(tt, p.TypeAnnotation);
                     }
                     if (method.ReturnType != null) ResolveTypeRef(tt, method.ReturnType);
+                    if (method.IsDefault) ResolveStmtListTypes(tt, method.Body!);
                 }
                 _currentScope = prev;
                 break;

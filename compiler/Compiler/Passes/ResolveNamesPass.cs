@@ -355,6 +355,19 @@ public sealed class ResolveNamesPass() : Pass(PassName, PassScope.PerFile)
                 ResolveNameRef(pc, interfaceDecl.Name, scope, pkg);
                 foreach (var iface in interfaceDecl.BaseInterfaces)
                     ResolveNameRef(pc, iface, scope, pkg);
+                foreach (var method in interfaceDecl.Methods)
+                {
+                    if (!method.IsDefault) continue;
+                    foreach (var p in method.Parameters)
+                    {
+                        pkg.Scopes.EnclosingScope(p.ID, out var pScope);
+                        ResolveNameRef(pc, p.Name, pScope, pkg);
+                        if (p.DefaultValue != null) ResolveExprNames(pc, p.DefaultValue, pkg);
+                    }
+                    ResolveStmtListNames(pc, method.Body!, pkg);
+                    if (method.ReturnStmt != null)
+                        ResolveStmtNames(pc, method.ReturnStmt, pkg);
+                }
                 break;
             }
         }

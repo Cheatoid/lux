@@ -557,14 +557,14 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
             if (method.IsProtected)
                 classType.ProtectedMembers.Add(method.Name.Name);
 
-            if (method.IsOverride && classType.BaseClass != null)
+            if (method.IsOverride)
             {
-                if (!ParentHasMethod(classType.BaseClass, method.Name.Name))
+                // `override` is valid against a base class method or an implemented interface
+                // method (including a default), since overriding an interface default is an override.
+                var hasParent = (classType.BaseClass != null && ParentHasMethod(classType.BaseClass, method.Name.Name))
+                    || InterfaceHasMethod(classType, method.Name.Name);
+                if (!hasParent)
                     pc.Diag.Report(method.Span, Diagnostics.DiagnosticCode.ErrOverrideNoParent, method.Name.Name);
-            }
-            else if (method.IsOverride && classType.BaseClass == null)
-            {
-                pc.Diag.Report(method.Span, Diagnostics.DiagnosticCode.ErrOverrideNoParent, method.Name.Name);
             }
 
             if (!method.IsOperator && !method.IsOverride && !method.IsAbstract && classType.BaseClass != null
@@ -674,9 +674,14 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
     {
         foreach (var ifaceType in classType.Interfaces)
         {
-            foreach (var (name, _) in ifaceType.Methods)
+            foreach (var (name, ft) in ifaceType.Methods)
             {
-                if (!classType.Methods.ContainsKey(name))
+                if (classType.Methods.ContainsKey(name)) continue;
+                // A method with a default implementation need not be implemented — the class
+                // inherits it. Otherwise it is a missing requirement.
+                if (ifaceType.DefaultMethods.Contains(name))
+                    InjectDefault(pc, classType, ifaceType, name, ft);
+                else
                     pc.Diag.Report(cd.Span, Diagnostics.DiagnosticCode.ErrMissingInterfaceMember, cd.Name.Name, name, ifaceType.Name);
             }
             foreach (var (name, _) in ifaceType.Fields)
@@ -684,6 +689,57 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
                 if (!classType.InstanceFields.ContainsKey(name))
                     pc.Diag.Report(cd.Span, Diagnostics.DiagnosticCode.ErrMissingInterfaceMember, cd.Name.Name, name, ifaceType.Name);
             }
+
+            // Defaults declared on transitively-extended interfaces are inherited too.
+            foreach (var baseIface in AllBaseInterfaces(ifaceType))
+                foreach (var name in baseIface.DefaultMethods)
+                    if (!classType.Methods.ContainsKey(name) && baseIface.Methods.TryGetValue(name, out var bft))
+                        InjectDefault(pc, classType, baseIface, name, bft);
+        }
+    }
+
+    /// <summary>
+    /// Materialises an interface default into <paramref name="classType"/>: registers the
+    /// method type (with a synthetic <c>self</c> so instance calls type-check) and records the
+    /// body node for codegen — unless a base class already supplies the method.
+    /// </summary>
+    private void InjectDefault(PassContext pc, ClassType classType, InterfaceType iface, string name, FunctionType ft)
+    {
+        if (classType.Methods.ContainsKey(name)) return;
+        if (classType.BaseClass != null && ParentHasMethod(classType.BaseClass, name)) return;
+
+        var paramTuples = new List<Tuple<string, Type>> { new("self", classType) };
+        for (var i = 0; i < ft.ParamTypes.Count; i++)
+            paramTuples.Add(new Tuple<string, Type>(ft.ParamNames[i], ft.ParamTypes[i]));
+        var withSelf = (FunctionType)GetType(pc, pc.Types.FuncOf(paramTuples, ft.ReturnType, ft.IsVararg,
+            ft.VarargType, ft.DefaultParams.Count > 0 ? ft.DefaultParams : null, ft.IsAsync));
+        classType.Methods[name] = withSelf;
+
+        if (iface.DefaultMethodNodes.TryGetValue(name, out var node))
+            classType.DefaultsToEmit[name] = node;
+    }
+
+    private static bool InterfaceHasMethod(ClassType classType, string name)
+    {
+        foreach (var iface in classType.Interfaces)
+        {
+            if (iface.Methods.ContainsKey(name)) return true;
+            foreach (var b in AllBaseInterfaces(iface))
+                if (b.Methods.ContainsKey(name)) return true;
+        }
+        return false;
+    }
+
+    private static IEnumerable<InterfaceType> AllBaseInterfaces(InterfaceType iface)
+    {
+        var seen = new HashSet<InterfaceType>();
+        var stack = new Stack<InterfaceType>(iface.BaseInterfaces);
+        while (stack.Count > 0)
+        {
+            var cur = stack.Pop();
+            if (!seen.Add(cur)) continue;
+            yield return cur;
+            foreach (var b in cur.BaseInterfaces) stack.Push(b);
         }
     }
 
@@ -719,6 +775,11 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
                 ifaceType.BaseInterfaces.Add(baseIfaceType);
         }
 
+        // Type `self` inside default-method bodies as the interface itself.
+        foreach (var (selfId, selfSym) in pc.Pkg.Syms.ByID)
+            if (selfSym.Name == "self" && selfSym.DeclaringNode == id.ID && selfSym.Type == TypID.Invalid)
+                pc.Pkg.Syms.SetType(selfId, ifaceType.ID);
+
         foreach (var field in id.Fields)
         {
             var fType = field.TypeAnnotation.ResolvedType != TypID.Invalid
@@ -744,6 +805,7 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
                 {
                     methodParams.Add(new Tuple<string, Type>(p.Name.Name, t));
                 }
+                if (p.Name.Sym != SymID.Invalid) pc.Pkg!.Syms.SetType(p.Name.Sym, t.ID);
             }
             var retType = method.ReturnType != null && method.ReturnType.ResolvedType != TypID.Invalid
                 ? GetType(pc, method.ReturnType.ResolvedType) : pc.Types.PrimNil;
@@ -754,6 +816,30 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
             AppendOverload(ifaceType.Methods, ifaceType.MethodOverloads,
                 ifaceType.MethodOverloadSides, method.Name.Name, ifaceFt, methodSide);
             StampMemberSide(pc, method.Annotations, ifaceType.MethodSides, method.Name.Name);
+
+            // A default method carries a body: record it (so implementing classes inherit it)
+            // and type-check the body with `self` bound to the interface.
+            if (method.IsDefault)
+            {
+                ifaceType.DefaultMethods.Add(method.Name.Name);
+                ifaceType.DefaultMethodNodes[method.Name.Name] = method;
+
+                if (method.IsAsync) _asyncDepth++;
+                ResolveStmts(pc, method.Body!);
+                if (method.ReturnStmt != null) ResolveStmt(pc, method.ReturnStmt);
+
+                var collected = CollectReturnTypes(pc, method.Body!);
+                if (method.ReturnStmt != null)
+                    collected.Add((ComputeReturnType(pc, method.ReturnStmt.Values), method.ReturnStmt.Span));
+                foreach (var (typ, span) in collected)
+                    EnsureAssignable(pc, span, retType.ID, typ);
+                if (ReturnTypeRequiresValue(pc, retType.ID) && !FunctionBodyAlwaysReturns(method.Body!, method.ReturnStmt))
+                {
+                    var span = method.ReturnType?.Span ?? method.Name.Span;
+                    pc.Diag.Report(span, DiagnosticCode.ErrMissingReturn, TypeName(pc, retType.ID));
+                }
+                if (method.IsAsync) _asyncDepth--;
+            }
         }
     }
 

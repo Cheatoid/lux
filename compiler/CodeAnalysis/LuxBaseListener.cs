@@ -1200,6 +1200,20 @@ public partial class LuxBaseListener : ILuxListener {
 	/// <param name="context">The parse tree.</param>
 	public virtual void ExitInterfaceFieldMember([NotNull] LuxParser.InterfaceFieldMemberContext context) { }
 	/// <summary>
+	/// Enter a parse tree produced by the <c>InterfaceDefaultMethodMember</c>
+	/// labeled alternative in <see cref="LuxParser.interfaceMember"/>.
+	/// <para>The default implementation does nothing.</para>
+	/// </summary>
+	/// <param name="context">The parse tree.</param>
+	public virtual void EnterInterfaceDefaultMethodMember([NotNull] LuxParser.InterfaceDefaultMethodMemberContext context) { }
+	/// <summary>
+	/// Exit a parse tree produced by the <c>InterfaceDefaultMethodMember</c>
+	/// labeled alternative in <see cref="LuxParser.interfaceMember"/>.
+	/// <para>The default implementation does nothing.</para>
+	/// </summary>
+	/// <param name="context">The parse tree.</param>
+	public virtual void ExitInterfaceDefaultMethodMember([NotNull] LuxParser.InterfaceDefaultMethodMemberContext context) { }
+	/// <summary>
 	/// Enter a parse tree produced by the <c>InterfaceMethodMember</c>
 	/// labeled alternative in <see cref="LuxParser.interfaceMember"/>.
 	/// <para>The default implementation does nothing.</para>

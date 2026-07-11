@@ -96,3 +96,42 @@ export interface Plugin
     name: string
 end
 ```
+
+## Default Methods
+
+An interface method **with a body** is a *default*: implementing classes inherit it
+automatically and only need to override it when they want different behavior. Methods
+**without** a body remain abstract and must be implemented.
+
+```lux
+interface Greetable
+    name: string
+    -- abstract: every implementer must provide this
+    function fullName(): string
+    -- default: implementers get this for free
+    function greet(): string
+        return "hi, I'm " .. self:fullName()
+    end
+end
+
+class Person implements Greetable
+    name: string
+    constructor(name: string) self.name = name end
+    function fullName(): string return self.name end
+    -- no greet(): inherits the default
+end
+
+class Robot implements Greetable
+    name: string
+    constructor(name: string) self.name = name end
+    function fullName(): string return "unit-" .. self.name end
+    override function greet(): string          -- opt out of the default
+        return "BEEP " .. self:fullName()
+    end
+end
+```
+
+Inside a default, `self` refers to the implementing instance, so a default may call other
+(abstract or default) interface methods and read interface fields. Defaults declared on a
+base interface are inherited through `extends`. At compile time the default body is copied
+onto each implementing class that does not override it — no runtime library, no shared state.
