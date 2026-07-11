@@ -527,8 +527,16 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
                 if (p.Name.Sym != SymID.Invalid) pc.Pkg!.Syms.SetType(p.Name.Sym, t.ID);
                 if (p.DefaultValue != null) { SynthesizeExpr(pc, p.DefaultValue); defaultIndices.Add(method.IsStatic ? i : i + 1); }
             }
-            var retType = method.ReturnType != null && method.ReturnType.ResolvedType != TypID.Invalid
-                ? GetType(pc, method.ReturnType.ResolvedType) : pc.Types.PrimNil;
+            Type retType;
+            if (method.ReturnType != null && method.ReturnType.ResolvedType != TypID.Invalid)
+                retType = GetType(pc, method.ReturnType.ResolvedType);
+            else if (!method.IsStatic && TryGetInheritedReturnType(classType, method.Name.Name, out var inheritedRet))
+                // A method that omits its return type inherits the signature of the
+                // method it overrides (base class or implemented interface), rather than
+                // silently defaulting to `nil`.
+                retType = inheritedRet;
+            else
+                retType = pc.Types.PrimNil;
             var funcTypId = pc.Types.FuncOf(methodParams, retType, isVararg, varargType, defaultIndices.Count > 0 ? defaultIndices : null, method.IsAsync);
             var ft = (FunctionType)GetType(pc, funcTypId);
             var methodSide = Lux.Compiler.Annotations.BuiltinAnnotations.ExtractSide(method.Annotations,
@@ -569,6 +577,21 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
             {
                 ResolveStmts(pc, method.Body);
                 if (method.ReturnStmt != null) ResolveStmt(pc, method.ReturnStmt);
+
+                // Return-value type check (parity with free functions, which do this in
+                // ResolveFunctionLike) plus the missing-return / all-paths analysis.
+                var collected = CollectReturnTypes(pc, method.Body);
+                if (method.ReturnStmt != null)
+                    collected.Add((ComputeReturnType(pc, method.ReturnStmt.Values), method.ReturnStmt.Span));
+                foreach (var (typ, span) in collected)
+                    EnsureAssignable(pc, span, retType.ID, typ);
+
+                if (ReturnTypeRequiresValue(pc, retType.ID)
+                    && !FunctionBodyAlwaysReturns(method.Body, method.ReturnStmt))
+                {
+                    var span = method.ReturnType?.Span ?? method.Name.Span;
+                    pc.Diag.Report(span, DiagnosticCode.ErrMissingReturn, TypeName(pc, retType.ID));
+                }
             }
             if (method.IsAsync) _asyncDepth--;
         }
@@ -837,6 +860,13 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
             foreach (var (typ, span) in collected)
             {
                 EnsureAssignable(pc, span, returnType.ID, typ);
+            }
+
+            if (ReturnTypeRequiresValue(pc, returnType.ID)
+                && !FunctionBodyAlwaysReturns(body, returnStmt))
+            {
+                pc.Diag.Report(returnTypeRef.Span, DiagnosticCode.ErrMissingReturn,
+                    TypeName(pc, returnType.ID));
             }
         }
         else
@@ -2328,6 +2358,176 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
     {
         return stmt is ReturnStmt or BreakStmt or ContinueStmt or GotoStmt;
     }
+
+    /// <summary>
+    /// A declared return type requires the body to actually produce a value on all paths
+    /// only when it can hold neither nil nor "anything". Nilable types (`T?`, `nil`, `void`)
+    /// tolerate a fall-through (which yields nil in Lua) and `any` opts out of the check.
+    /// </summary>
+    private bool ReturnTypeRequiresValue(PassContext pc, TypID retId)
+    {
+        return retId != pc.Types.PrimAny.ID && !IsNullable(pc, retId);
+    }
+
+    /// <summary>
+    /// Finds the return type of the method named <paramref name="name"/> as declared by a
+    /// base class or an implemented interface, so an override that omits its own return
+    /// annotation inherits the overridden signature instead of defaulting to nil.
+    /// </summary>
+    private static bool TryGetInheritedReturnType(ClassType classType, string name, out Type retType)
+    {
+        for (var cur = classType.BaseClass; cur != null; cur = cur.BaseClass)
+        {
+            if (cur.Methods.TryGetValue(name, out var baseFt))
+            {
+                retType = baseFt.ReturnType;
+                return true;
+            }
+        }
+
+        foreach (var iface in classType.Interfaces)
+        {
+            if (TryGetInterfaceMethodReturn(iface, name, out retType))
+                return true;
+        }
+
+        retType = null!;
+        return false;
+    }
+
+    private static bool TryGetInterfaceMethodReturn(InterfaceType iface, string name, out Type retType)
+    {
+        if (iface.Methods.TryGetValue(name, out var ft))
+        {
+            retType = ft.ReturnType;
+            return true;
+        }
+
+        foreach (var b in iface.BaseInterfaces)
+        {
+            if (TryGetInterfaceMethodReturn(b, name, out retType))
+                return true;
+        }
+
+        retType = null!;
+        return false;
+    }
+
+    /// <summary>
+    /// Conservative all-paths-return analysis for the missing-return check. Returns true
+    /// when the body is guaranteed to return or diverge on every path. The trailing return
+    /// (stored separately from the body) short-circuits to true. The analysis is biased
+    /// toward answering "yes" when unsure so it never produces a false "missing return".
+    /// </summary>
+    private static bool FunctionBodyAlwaysReturns(List<Stmt> body, ReturnStmt? tailReturn)
+    {
+        return tailReturn != null || BlockAlwaysExits(body);
+    }
+
+    private static bool BlockAlwaysExits(List<Stmt> stmts)
+    {
+        foreach (var stmt in stmts)
+        {
+            if (StmtAlwaysExits(stmt)) return true;
+        }
+        return false;
+    }
+
+    private static bool StmtAlwaysExits(Stmt stmt)
+    {
+        switch (stmt)
+        {
+            case ReturnStmt:
+            case BreakStmt:
+            case ContinueStmt:
+            case GotoStmt:
+                return true;
+            case ExprStmt es:
+                return IsDivergingCall(es.Expression);
+            case DoBlockStmt db:
+                return BlockAlwaysExits(db.Body);
+            case IfStmt ifs:
+                if (ifs.ElseBody == null) return false;
+                if (!BlockAlwaysExits(ifs.Body)) return false;
+                foreach (var e in ifs.ElseIfs)
+                    if (!BlockAlwaysExits(e.Body)) return false;
+                return BlockAlwaysExits(ifs.ElseBody);
+            case WhileStmt ws:
+                return IsLiteralTrue(ws.Condition) && !LoopHasEscapingBreak(ws.Body, 0);
+            case RepeatStmt rp:
+                return IsLiteralFalse(rp.Condition) && !LoopHasEscapingBreak(rp.Body, 0);
+            case MatchStmt ms:
+                // No exhaustiveness reasoning here: if a match with all-exiting arms is not
+                // actually exhaustive, control falls through at runtime — treating it as
+                // exiting only risks a missed (never a false) missing-return diagnostic.
+                return ms.Arms.Count > 0 && ms.Arms.All(a => BlockAlwaysExits(a.Body));
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// True when <paramref name="stmts"/> contains a <c>break</c> that escapes the loop being
+    /// analysed (nesting 0). Breaks that target loops nested inside are not counted. Used to
+    /// decide whether a <c>while true</c> / <c>repeat until false</c> loop can terminate.
+    /// </summary>
+    private static bool LoopHasEscapingBreak(List<Stmt> stmts, int nesting)
+    {
+        foreach (var stmt in stmts)
+        {
+            if (StmtHasEscapingBreak(stmt, nesting)) return true;
+        }
+        return false;
+    }
+
+    private static bool StmtHasEscapingBreak(Stmt stmt, int nesting)
+    {
+        switch (stmt)
+        {
+            case BreakStmt b:
+                return b.Depth > nesting;
+            case WhileStmt w:
+                return LoopHasEscapingBreak(w.Body, nesting + 1);
+            case RepeatStmt r:
+                return LoopHasEscapingBreak(r.Body, nesting + 1);
+            case NumericForStmt nf:
+                return LoopHasEscapingBreak(nf.Body, nesting + 1);
+            case GenericForStmt gf:
+                return LoopHasEscapingBreak(gf.Body, nesting + 1);
+            case DoBlockStmt db:
+                return LoopHasEscapingBreak(db.Body, nesting);
+            case IfStmt ifs:
+                if (LoopHasEscapingBreak(ifs.Body, nesting)) return true;
+                foreach (var e in ifs.ElseIfs)
+                    if (LoopHasEscapingBreak(e.Body, nesting)) return true;
+                return ifs.ElseBody != null && LoopHasEscapingBreak(ifs.ElseBody, nesting);
+            case MatchStmt ms:
+                foreach (var a in ms.Arms)
+                    if (LoopHasEscapingBreak(a.Body, nesting)) return true;
+                return false;
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>A call that never returns normally (<c>error(...)</c>, <c>os.exit(...)</c>).</summary>
+    private static bool IsDivergingCall(Expr expr)
+    {
+        if (expr is not FunctionCallExpr call) return false;
+        var callee = Unparen(call.Callee);
+        return callee switch
+        {
+            NameExpr ne => ne.Name.Name == "error",
+            DotAccessExpr { Object: NameExpr obj } da => obj.Name.Name == "os" && da.FieldName.Name == "exit",
+            _ => false
+        };
+    }
+
+    private static Expr Unparen(Expr expr) => expr is ParenExpr p ? Unparen(p.Inner) : expr;
+
+    private static bool IsLiteralTrue(Expr expr) => Unparen(expr) is BoolLiteralExpr { Value: true };
+
+    private static bool IsLiteralFalse(Expr expr) => Unparen(expr) is BoolLiteralExpr { Value: false };
 
     private bool IsTypeAssignable(PassContext pc, TypID dst, TypID src)
     {

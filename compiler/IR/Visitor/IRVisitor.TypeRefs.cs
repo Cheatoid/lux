@@ -60,6 +60,15 @@ internal partial class IRVisitor
             return new PrimitiveTypeRef(NewNodeID, SpanFromCtx(context), kind);
         }
 
+        // `void` documents "no return value". It is an alias for `nil`: a function
+        // that returns nothing yields `nil`, and a `nil`/`void` return is exempt from
+        // the missing-return check. Modelling true zero-value `none` semantics (distinct
+        // from `nil`) is tracked with the return-arity work (variadic returns).
+        if (string.Equals(nameText, "void", StringComparison.OrdinalIgnoreCase))
+        {
+            return new PrimitiveTypeRef(NewNodeID, SpanFromCtx(context), TypeKind.PrimitiveNil);
+        }
+
         return new NamedTypeRef(NewNodeID, SpanFromCtx(context), NameRefFromTerm(context.NAME()));
     }
 

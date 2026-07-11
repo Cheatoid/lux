@@ -166,6 +166,11 @@ public enum DiagnosticCode
     [Format("'await' can only be used inside an 'async' function")]
     ErrAwaitOutsideAsync = 0x200D,
 
+    [Level(DiagnosticLevel.Error)]
+    [Category(DiagnosticCategory.Type)]
+    [Format("Function with return type '{0}' must return a value on all code paths")]
+    ErrMissingReturn = 0x200E,
+
     #endregion
 
     #region Module

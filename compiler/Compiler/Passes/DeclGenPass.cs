@@ -319,7 +319,7 @@ public sealed class DeclGenPass() : Pass(PassName, PassScope.PerBuild, true)
             sb.Append('(');
             EmitParams(sb, ctx, pkg, method.Parameters);
             sb.Append(')');
-            EmitReturnType(sb, ctx, pkg, method.Name);
+            EmitReturnType(sb, ctx, pkg, method.ReturnType);
             sb.AppendLine();
         }
 
@@ -333,7 +333,7 @@ public sealed class DeclGenPass() : Pass(PassName, PassScope.PerBuild, true)
             EmitParams(sb, ctx, pkg, accessor.Parameters);
             sb.Append(')');
             if (accessor.ReturnType != null)
-                EmitReturnType(sb, ctx, pkg, accessor.Name);
+                EmitReturnType(sb, ctx, pkg, accessor.ReturnType);
             sb.AppendLine();
         }
 
@@ -371,7 +371,7 @@ public sealed class DeclGenPass() : Pass(PassName, PassScope.PerBuild, true)
             sb.Append('(');
             EmitParams(sb, ctx, pkg, method.Parameters);
             sb.Append(')');
-            EmitReturnType(sb, ctx, pkg, method.Name);
+            EmitReturnType(sb, ctx, pkg, method.ReturnType);
             sb.AppendLine();
         }
 
@@ -414,6 +414,20 @@ public sealed class DeclGenPass() : Pass(PassName, PassScope.PerBuild, true)
 
         sb.Append(": ");
         sb.Append(FormatType(ctx, ft.ReturnType));
+    }
+
+    /// <summary>
+    /// Emits a method/accessor return type straight from its resolved AST <see cref="TypeRef"/>.
+    /// Class-method names are not declared as symbols, so the name-symbol lookup used for free
+    /// functions yields nothing here and would drop the return type entirely.
+    /// </summary>
+    private void EmitReturnType(StringBuilder sb, PassContext ctx, PackageContext pkg, TypeRef? returnType)
+    {
+        if (returnType == null || returnType.ResolvedType == TypID.Invalid) return;
+        if (!ctx.Types.GetByID(returnType.ResolvedType, out var typ)) return;
+
+        sb.Append(": ");
+        sb.Append(FormatType(ctx, typ));
     }
 
     private string FormatSymType(PassContext ctx, PackageContext pkg, NameRef nameRef)
