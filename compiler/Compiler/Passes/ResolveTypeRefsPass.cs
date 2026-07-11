@@ -782,6 +782,12 @@ public class ResolveTypeRefsPass() : Pass(PassName, PassScope.PerBuild)
                 result = tt.DeclareType(new UnionType(t.Types.Select(ut => ResolveTypeRef(tt, ut)).ToList()));
                 break;
             }
+            case TypeKind.Variadic:
+            {
+                var t = (VariadicTypeRef) tr;
+                result = tt.DeclareType(new VariadicType(ResolveTypeRef(tt, t.ElementType)));
+                break;
+            }
             case TypeKind.Struct:
             {
                 var t = (StructTypeRef) tr;

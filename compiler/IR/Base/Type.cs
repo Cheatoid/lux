@@ -30,6 +30,7 @@ public enum TypeKind
     Interface,
     TypeParameter,
     Parameterized,
+    Variadic,
 }
 
 /// <summary>
@@ -81,6 +82,24 @@ public sealed class TableArrayType(Type elementType) : Type(TypeKind.TableArray)
     protected override TypeKey GenerateNewKey()
     {
         return $"{ElementType.Key}[]";
+    }
+}
+
+/// <summary>
+/// Represents a variadic type <c>...T</c> — zero or more values of <see cref="ElementType"/>.
+/// Only meaningful as a function return type (or the trailing element of a tuple return type):
+/// it models Lua's multiple-return-value tail so a signature can say "returns any number of T".
+/// A variadic return may legitimately yield zero values, so it is exempt from the missing-return
+/// check, and it collapses to <see cref="ElementType"/> when bound to a single value.
+/// </summary>
+public sealed class VariadicType(Type elementType) : Type(TypeKind.Variadic)
+{
+    /// <summary>The type of each value in the variadic tail.</summary>
+    public Type ElementType { get; } = elementType;
+
+    protected override TypeKey GenerateNewKey()
+    {
+        return $"...{ElementType.Key}";
     }
 }
 
@@ -646,6 +665,14 @@ public sealed class TypeTable
     {
         var arrayType = new TableArrayType(elementType);
         return DeclareType(arrayType);
+    }
+
+    /// <summary>
+    /// Creates (or returns cached) a <see cref="VariadicType"/> <c>...T</c> over the given element type.
+    /// </summary>
+    public VariadicType VariadicOf(Type elementType)
+    {
+        return (VariadicType)DeclareType(new VariadicType(elementType));
     }
     
     /// <summary>

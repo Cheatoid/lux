@@ -980,6 +980,13 @@ public interface ILuxVisitor<Result> : IParseTreeVisitor<Result> {
 	/// <return>The visitor result.</return>
 	Result VisitGroupedOrTupleType([NotNull] LuxParser.GroupedOrTupleTypeContext context);
 	/// <summary>
+	/// Visit a parse tree produced by the <c>VariadicType</c>
+	/// labeled alternative in <see cref="LuxParser.typeAtom"/>.
+	/// </summary>
+	/// <param name="context">The parse tree.</param>
+	/// <return>The visitor result.</return>
+	Result VisitVariadicType([NotNull] LuxParser.VariadicTypeContext context);
+	/// <summary>
 	/// Visit a parse tree produced by <see cref="LuxParser.typeArgList"/>.
 	/// </summary>
 	/// <param name="context">The parse tree.</param>

@@ -89,6 +89,27 @@ function multi(): (string, number, boolean)
 end
 ```
 
+## Variadic Return Types
+
+Use `...T` to return an arbitrary number of values of type `T` — the counterpart of a variadic
+parameter. It is valid as a function return type or as the trailing element of a tuple return:
+
+```lux
+function forward(arr: number[]): ...number
+    return table.unpack(arr)          -- any number of numbers
+end
+
+function tagged(): (string, ...number)
+    return "point", 10, 20, 30        -- a string followed by zero-or-more numbers
+end
+
+local a, b, c = forward({1, 2, 3})    -- each binds to a number
+local tag, x, y = tagged()            -- tag: string, x/y: number
+```
+
+A `...T` return may yield zero values, so — like `void` — it is exempt from the "must return a
+value" check. When captured by a single variable it collapses to `T`.
+
 ## Type Check Expression (`is`)
 
 Check a value's type at runtime:

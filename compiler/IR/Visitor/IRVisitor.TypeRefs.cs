@@ -72,6 +72,9 @@ internal partial class IRVisitor
         return new NamedTypeRef(NewNodeID, SpanFromCtx(context), NameRefFromTerm(context.NAME()));
     }
 
+    public override Node VisitVariadicType(LuxParser.VariadicTypeContext context)
+        => new VariadicTypeRef(NewNodeID, SpanFromCtx(context), (TypeRef)Visit(context.typeSingle()));
+
     public override Node VisitFuncType(LuxParser.FuncTypeContext context)
         => Visit(context.functionType());
 

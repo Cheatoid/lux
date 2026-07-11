@@ -926,7 +926,7 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
         {
             var variable = ld.Variables[i];
             var annotated = variable.TypeAnnotation?.ResolvedType ?? TypID.Invalid;
-            var inferred = i < valueTypes.Count ? valueTypes[i] : pc.Types.PrimNil.ID;
+            var inferred = i < valueTypes.Count ? CollapseVariadic(pc, valueTypes[i]) : pc.Types.PrimNil.ID;
 
             TypID finalType;
             if (annotated != TypID.Invalid)
@@ -991,15 +991,47 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
         if (!IsMultiReturnExpr(values[^1])) return valueTypes;
 
         var lastTyp = valueTypes[^1];
-        if (!pc.Pkg!.Types.GetByID(lastTyp, out var t) || t is not TupleType tuple) return valueTypes;
+        if (!pc.Pkg!.Types.GetByID(lastTyp, out var t)) return valueTypes;
 
         var expanded = new List<TypID>(valueTypes.Take(valueTypes.Count - 1));
-        foreach (var f in tuple.Fields)
+        switch (t)
         {
-            expanded.Add(f.Type.ID);
+            case TupleType tuple:
+            {
+                // A tuple return may end in a variadic tail, e.g. `(number, ...string)`:
+                // the fixed fields fill their slots, then the tail element repeats to cover
+                // any remaining LHS slots.
+                var fixedCount = tuple.Fields.Count;
+                VariadicType? tail = null;
+                if (fixedCount > 0 && tuple.Fields[^1].Type is VariadicType vt)
+                {
+                    tail = vt;
+                    fixedCount--;
+                }
+                for (var i = 0; i < fixedCount; i++) expanded.Add(tuple.Fields[i].Type.ID);
+                if (tail != null)
+                    while (expanded.Count < targetCount) expanded.Add(tail.ElementType.ID);
+                break;
+            }
+            case VariadicType variadic:
+                // `...T` fills every remaining LHS slot with T.
+                while (expanded.Count < targetCount) expanded.Add(variadic.ElementType.ID);
+                break;
+            default:
+                return valueTypes;
         }
 
         return expanded;
+    }
+
+    /// <summary>
+    /// A variadic type is a multi-value marker; when it lands in a single-value slot
+    /// (e.g. <c>local a = variadicReturningCall()</c>) it collapses to its element type.
+    /// </summary>
+    private TypID CollapseVariadic(PassContext pc, TypID id)
+    {
+        if (pc.Pkg!.Types.GetByID(id, out var t) && t is VariadicType v) return v.ElementType.ID;
+        return id;
     }
 
     /// <summary>
@@ -2366,7 +2398,10 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
     /// </summary>
     private bool ReturnTypeRequiresValue(PassContext pc, TypID retId)
     {
-        return retId != pc.Types.PrimAny.ID && !IsNullable(pc, retId);
+        if (retId == pc.Types.PrimAny.ID) return false;
+        // A variadic `...T` return may yield zero values, so a fall-through is legal.
+        if (pc.Pkg!.Types.GetByID(retId, out var t) && t.Kind == TypeKind.Variadic) return false;
+        return !IsNullable(pc, retId);
     }
 
     /// <summary>
@@ -2536,6 +2571,25 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
         var tt = pc.Types;
         if (dst == tt.PrimAny.ID || src == tt.PrimAny.ID) return true;
 
+        // Variadic `...T` target: every returned value must be assignable to T. Zero values
+        // (a bare `return` → nil source) are allowed. A tuple source checks each element; a
+        // variadic source checks its element type; a single value checks directly.
+        if (pc.Pkg!.Types.GetByID(dst, out var dstVarCheck) && dstVarCheck is VariadicType dstVariadic)
+        {
+            if (src == tt.PrimNil.ID) return true;
+            if (pc.Pkg.Types.GetByID(src, out var srcForVar))
+            {
+                if (srcForVar is VariadicType sv) return IsTypeAssignable(pc, dstVariadic.ElementType.ID, sv.ElementType.ID);
+                if (srcForVar is TupleType st) return st.Fields.All(f => IsTypeAssignable(pc, dstVariadic.ElementType.ID, f.Type.ID));
+            }
+            return IsTypeAssignable(pc, dstVariadic.ElementType.ID, src);
+        }
+        // A variadic source in a single-value target position collapses to its element type.
+        if (pc.Pkg!.Types.GetByID(src, out var srcVarCheck) && srcVarCheck is VariadicType srcVariadic)
+        {
+            return IsTypeAssignable(pc, dst, srcVariadic.ElementType.ID);
+        }
+
         if (pc.Pkg!.Types.GetByID(dst, out var dstTpCheck) && dstTpCheck is TypeParameterType dstTp)
         {
             if (dstTp.ExtendsBound is { } eb) return IsTypeAssignable(pc, eb, src);
@@ -2611,9 +2665,36 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
             {
                 if (IsTypeAssignable(pc, dstArr.ElementType.ID, srcArr.ElementType.ID)) return true;
             }
+
+            // A tuple return ending in a variadic tail, e.g. `(string, ...number)`, matches a
+            // longer tuple of actual return values: fixed prefix positionally, the rest against
+            // the tail element. Non-variadic tuples keep their existing exact-match semantics.
+            if (dstTypeNode is TupleType dstTuple && srcTypeNode is TupleType srcTuple
+                && dstTuple.Fields.Count > 0 && dstTuple.Fields[^1].Type is VariadicType)
+            {
+                if (TupleWithVariadicTailAssignable(pc, dstTuple, srcTuple)) return true;
+            }
         }
 
         return StructEqual(pc, dst, src);
+    }
+
+    /// <summary>
+    /// Assignability for a destination tuple whose last field is a variadic tail
+    /// (e.g. <c>(string, ...number)</c>): the fixed prefix must match positionally and every
+    /// remaining source element must be assignable to the tail element type.
+    /// </summary>
+    private bool TupleWithVariadicTailAssignable(PassContext pc, TupleType dst, TupleType src)
+    {
+        var fixedCount = dst.Fields.Count - 1;
+        var tail = (VariadicType)dst.Fields[^1].Type;
+
+        if (src.Fields.Count < fixedCount) return false;
+        for (var i = 0; i < fixedCount; i++)
+            if (!IsTypeAssignable(pc, dst.Fields[i].Type.ID, src.Fields[i].Type.ID)) return false;
+        for (var i = fixedCount; i < src.Fields.Count; i++)
+            if (!IsTypeAssignable(pc, tail.ElementType.ID, src.Fields[i].Type.ID)) return false;
+        return true;
     }
 
     private static bool ClassImplementsInterface(ClassType cls, InterfaceType target)

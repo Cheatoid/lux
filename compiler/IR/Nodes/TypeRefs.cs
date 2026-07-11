@@ -54,6 +54,16 @@ public sealed class TupleTypeRef(NodeID id, TextSpan span, List<TypeRef> element
 }
 
 /// <summary>
+/// A variadic type reference <c>...T</c>, used in a function return position (or the trailing
+/// element of a tuple return) to declare an arbitrary number of returned values of type T.
+/// Resolved by <see cref="Passes.ResolveTypeRefsPass"/> to a <see cref="VariadicType"/>.
+/// </summary>
+public sealed class VariadicTypeRef(NodeID id, TextSpan span, TypeRef elementType) : TypeRef(id, span, TypeKind.Variadic)
+{
+    public TypeRef ElementType { get; } = elementType;
+}
+
+/// <summary>
 /// A reference to a generic (parameterized) type, such as <c>List&lt;number&gt;</c> or <c>Map&lt;string, Foo&gt;</c>.
 /// The head <see cref="Name"/> points at a generic class or interface definition; <see cref="Arguments"/> are the
 /// type arguments supplied at the use site.

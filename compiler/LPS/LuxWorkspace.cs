@@ -829,6 +829,7 @@ public sealed class LuxWorkspace
                 f.Name == null ? FormatType(types, f.Type) : $"{f.Name.Name}: {FormatType(types, f.Type)}")) + ")";
             case StructType st: return "{ " + string.Join(", ", st.Fields.Select(f =>
                 $"{f.Name.Name}: {FormatType(types, f.Type)}")) + " }";
+            case VariadicType variadic: return "..." + FormatType(types, variadic.ElementType);
             default: return PrettifyTypeKey(typ.Key);
         }
     }

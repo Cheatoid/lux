@@ -1643,6 +1643,18 @@ public interface ILuxListener : IParseTreeListener {
 	/// <param name="context">The parse tree.</param>
 	void ExitGroupedOrTupleType([NotNull] LuxParser.GroupedOrTupleTypeContext context);
 	/// <summary>
+	/// Enter a parse tree produced by the <c>VariadicType</c>
+	/// labeled alternative in <see cref="LuxParser.typeAtom"/>.
+	/// </summary>
+	/// <param name="context">The parse tree.</param>
+	void EnterVariadicType([NotNull] LuxParser.VariadicTypeContext context);
+	/// <summary>
+	/// Exit a parse tree produced by the <c>VariadicType</c>
+	/// labeled alternative in <see cref="LuxParser.typeAtom"/>.
+	/// </summary>
+	/// <param name="context">The parse tree.</param>
+	void ExitVariadicType([NotNull] LuxParser.VariadicTypeContext context);
+	/// <summary>
 	/// Enter a parse tree produced by <see cref="LuxParser.typeArgList"/>.
 	/// </summary>
 	/// <param name="context">The parse tree.</param>

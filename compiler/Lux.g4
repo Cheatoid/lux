@@ -610,6 +610,7 @@ typeAtom
     | functionType                                              # FuncType
     | tableType                                                 # TableType_
     | LPAREN typeExpr (COMMA typeExpr)* RPAREN                  # GroupedOrTupleType
+    | ELLIPSIS typeSingle                                       # VariadicType
     ;
 
 // --- Generic Type Arguments ---

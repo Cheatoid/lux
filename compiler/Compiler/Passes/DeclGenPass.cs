@@ -449,6 +449,7 @@ public sealed class DeclGenPass() : Pass(PassName, PassScope.PerBuild, true)
             UnionType union => string.Join(" | ", union.Types.Select(t => FormatType(ctx, t))),
             StructType st => $"{{ {string.Join(", ", st.Fields.Select(f => $"{f.Name.Name}: {FormatType(ctx, f.Type)}"))} }}",
             TupleType tuple => $"({string.Join(", ", tuple.Fields.Select(f => FormatType(ctx, f.Type)))})",
+            VariadicType variadic => $"...{FormatType(ctx, variadic.ElementType)}",
             ClassType ct => ct.Name,
             InterfaceType it => it.Name,
             EnumType et => et.Name,

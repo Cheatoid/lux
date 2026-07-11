@@ -34,7 +34,7 @@ declare function error(message: any, level: number?): nil
 declare function assert(v: any, message: any?): any
 declare function pcall(f: any, ...: any): any
 declare function xpcall(f: any, handler: any, ...: any): any
-declare function unpack(list: any, i: number?, j: number?): any
+declare function unpack(list: any, i: number?, j: number?): ...any
 declare function rawget(t: any, key: any): any
 declare function rawset(t: any, key: any, v: any): any
 declare function rawequal(a: any, b: any): boolean
@@ -78,7 +78,7 @@ declare interface TableLib
     function insert(list: any, posOrValue: any, value: any?): nil
     function remove(list: any, pos: number?): any
     function sort(list: any, comp: any?): nil
-    function unpack(list: any, i: number?, j: number?): any
+    function unpack(list: any, i: number?, j: number?): ...any
     function pack(...: any): any
     function move(a1: any, f: number, e: number, t: number, a2: any?): any
     function maxn(list: any): number

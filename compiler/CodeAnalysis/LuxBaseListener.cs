@@ -1932,6 +1932,20 @@ public partial class LuxBaseListener : ILuxListener {
 	/// <param name="context">The parse tree.</param>
 	public virtual void ExitGroupedOrTupleType([NotNull] LuxParser.GroupedOrTupleTypeContext context) { }
 	/// <summary>
+	/// Enter a parse tree produced by the <c>VariadicType</c>
+	/// labeled alternative in <see cref="LuxParser.typeAtom"/>.
+	/// <para>The default implementation does nothing.</para>
+	/// </summary>
+	/// <param name="context">The parse tree.</param>
+	public virtual void EnterVariadicType([NotNull] LuxParser.VariadicTypeContext context) { }
+	/// <summary>
+	/// Exit a parse tree produced by the <c>VariadicType</c>
+	/// labeled alternative in <see cref="LuxParser.typeAtom"/>.
+	/// <para>The default implementation does nothing.</para>
+	/// </summary>
+	/// <param name="context">The parse tree.</param>
+	public virtual void ExitVariadicType([NotNull] LuxParser.VariadicTypeContext context) { }
+	/// <summary>
 	/// Enter a parse tree produced by <see cref="LuxParser.typeArgList"/>.
 	/// <para>The default implementation does nothing.</para>
 	/// </summary>

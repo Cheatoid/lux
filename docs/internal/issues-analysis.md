@@ -113,9 +113,26 @@ was zulässig/erwünscht ist).
   Rückgabewerte propagiert ([InferTypesPass.cs:2305](../../compiler/Compiler/Passes/InferTypesPass.cs#L2305)
   `ComputeReturnType`).
 
-**Empfehlung (offen):** Variadic-Return-Syntax (`...T`) + „variadic tail" im Return-Modell (spiegelt
-`FunctionType.IsVararg`/`VarargType`, die es für Parameter schon gibt) **plus** Inferenz für trailing
-Multi-Value-Ausdrücke. Zusammen mit 1/6 als Return-Signatur-Modell designen.
+**Entscheidung / umgesetzt (#15):** Variadic-Return-Syntax `...T` eingeführt.
+- Grammatik: `typeAtom : ... | ELLIPSIS typeSingle # VariadicType` (Parser regeneriert).
+- Typ-Modell: neuer `VariadicType(elementType)` (`TypeKind.Variadic`), nutzbar als Return-Typ und als
+  Tuple-Tail (`(string, ...number)`).
+- Inferenz: Assignability für Variadic-Ziele (Tuple/Single/Variadic-Quelle, Zero-Values via `nil`);
+  Tuple-mit-Variadic-Tail-Assignability; Call-Site-Expansion (`local a, b, c = f()` füllt alle Slots);
+  Collapse zu `T` bei Einzelbindung; Ausnahme vom Missing-Return-Check (kann 0 Werte liefern).
+- stdlib: `unpack`/`table.unpack` liefern jetzt `...any` → `return table.unpack(arr)` funktioniert.
+- Anzeige: `...T` in DeclGen und LSP-Hover.
+- End-to-End verifiziert: erzeugt sauberes natives Lua-Multi-Return; `select("#", ...)` korrekt.
+
+**Bewusste Folgearbeit (nicht in #15):**
+- `...T` ist syntaktisch überall erlaubt, aber nur in Return-Position sinnvoll; Verwendung in
+  Variablen-/Parameter-Position wird lenient behandelt (collapse), nicht per Diagnose verboten.
+- `return ...` / `return call()` wird über `any` akzeptiert; präzises Tracking des Vararg-Element-Typs
+  (sodass `return ...` bei `...: string` nur `...string` erfüllt) fehlt noch.
+- Variadic + Generics (`unpack<T>(a: T[]): ...T`) ist nicht durch `TypeTable.Substitute` verdrahtet.
+- Spreizen eines Variadic-Calls als Funktions-**Argument** (`f(forward(arr))`) wird nicht expandiert —
+  nur Assignment-/Return-Kontexte.
+- Die echte `none`-vs-`nil`-Arity aus Issue 1 könnte hierauf aufbauen (0-Werte-Marker), ist aber offen.
 
 ---
 
@@ -169,6 +186,6 @@ Full Traits ablehnen, bis ein Use-Case auftaucht, den diese beiden nicht abdecke
 | 1 | **6** Return-Enforcement (+ **5** Override) | in Umsetzung (Cluster 1/5/6) |
 | 2 | **1** `void` | in Umsetzung |
 | 3 | **2** Constructor-Opt | offen |
-| 4 | **7** Variadic Returns | offen (mit 1/6 designen) |
+| 4 | **7** Variadic Returns | umgesetzt (#15) |
 | 5 | **4** Traits | offen — auf Default-Methods + Extensions eindampfen |
 | 6 | **3** Reflection | offen — erst Use-Cases scopen |
