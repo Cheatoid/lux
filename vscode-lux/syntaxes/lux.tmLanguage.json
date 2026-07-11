@@ -200,7 +200,7 @@
         },
         {
           "name": "storage.type.lux",
-          "match": "\\b(function|class|interface|enum|extends|implements|operator|constructor|new)\\b"
+          "match": "\\b(function|class|interface|enum|extends|extend|implements|operator|constructor|new)\\b"
         },
         {
           "name": "keyword.operator.logical.word.lux",

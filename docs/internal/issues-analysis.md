@@ -202,6 +202,22 @@ Full Traits ablehnen, bis ein Use-Case auftaucht, den diese beiden nicht abdecke
 
 ---
 
+## LSP-Verdrahtung (Editor-Parität)
+
+- **Diagnostics**: laufen automatisch — die `CheckPipeline` (LSP) enthält ResolveNames/ResolveTypeRefs/
+  InferTypes, also greifen Missing-Return, Override-Vererbung, Variadic, Interface-Default-Injektion,
+  Extension-Resolution und `ErrDuplicateExtension` im Editor genauso wie beim Build.
+- **Interface-Defaults**: bereits abgedeckt — Defaults werden in `classType.Methods`/`ifaceType.Methods`
+  injiziert, daher funktionieren Hover/Completion automatisch. Code-Action „Implement missing members"
+  überspringt jetzt Default-Methoden (nicht mehr als zu implementieren vorgeschlagen).
+- **Extension-Methoden** (neu verdrahtet): Hover und Completion via geteiltem `Type.ResolveExtension` /
+  `Type.EnumerateExtensions` — inkl. Primitive-Receiver (`n:double()` auf `number`). Am echten
+  `lux lps` verifiziert (Hover + Completion antworten korrekt).
+- **`extend`-Keyword**: Semantic-Tokens + TextMate-Grammar ergänzt; `void` war schon im Grammar.
+- **Bewusst offen (Parität mit regulären Methoden)**: Go-to-Definition/References/Rename lösen nur
+  Symbole auf — Member-/Methodenaufrufe (regulär *und* Extension) werden dort generell nicht aufgelöst;
+  das ist ein vorbestehender, gemeinsamer Gap, kein Extension-spezifischer.
+
 ## Priorisierung
 
 | Prio | Issue | Status |

@@ -293,6 +293,18 @@ public sealed class HoverHandler(LuxWorkspace workspace) : HoverHandlerBase
                     null, workspace.FormatTypeReferencesLine(result, field.Type.ID));
         }
 
+        // Extension methods declared via `extend Type` — resolved on the type, its base
+        // classes, or its implemented/extended interfaces (works for primitives too).
+        var (extFn, extTarget) = IR.Type.ResolveExtension(recvType, name);
+        if (extFn != null && extTarget != null)
+        {
+            var targetName = extTarget is ClassType ec ? ec.Name
+                : extTarget is InterfaceType ei ? ei.Name
+                : workspace.FormatType(result.Types, extTarget);
+            return ("(extension) " + FormatMember(result, targetName, name, extFn, isMethodLike: true),
+                null, workspace.FormatTypeReferencesLine(result, extFn.ID));
+        }
+
         return (null, null, null);
     }
 

@@ -55,6 +55,81 @@ public class Type(TypeKind kind)
     /// </summary>
     public Dictionary<string, FunctionType> ExtensionMethods { get; } = new();
 
+    /// <summary>The declaring AST node for each extension method (for go-to-definition / hover).</summary>
+    public Dictionary<string, ExtensionMethodNode> ExtensionMethodNodes { get; } = new();
+
+    /// <summary>
+    /// Resolves an extension method named <paramref name="name"/> visible on
+    /// <paramref name="objType"/> — checking the type itself, its base classes, and its
+    /// implemented/extended interfaces. Returns the self-prefixed signature and the type the
+    /// extension was declared on. Shared by type inference and the language server.
+    /// </summary>
+    public static (FunctionType? Fn, Type? Target) ResolveExtension(Type objType, string name)
+    {
+        if (objType.ExtensionMethods.TryGetValue(name, out var direct)) return (direct, objType);
+
+        switch (objType)
+        {
+            case ClassType ct:
+                for (var cur = ct.BaseClass; cur != null; cur = cur.BaseClass)
+                    if (cur.ExtensionMethods.TryGetValue(name, out var bft)) return (bft, cur);
+                foreach (var iface in ct.Interfaces)
+                {
+                    if (iface.ExtensionMethods.TryGetValue(name, out var ift)) return (ift, iface);
+                    foreach (var b in BaseInterfacesOf(iface))
+                        if (b.ExtensionMethods.TryGetValue(name, out var bift)) return (bift, b);
+                }
+                break;
+            case InterfaceType it:
+                foreach (var b in BaseInterfacesOf(it))
+                    if (b.ExtensionMethods.TryGetValue(name, out var bift)) return (bift, b);
+                break;
+        }
+
+        return (null, null);
+    }
+
+    /// <summary>
+    /// Enumerates every extension method visible on <paramref name="objType"/> — its own, plus
+    /// those on base classes and implemented/extended interfaces. Used by editor completion.
+    /// May yield the same name more than once (nearest-first); callers dedupe.
+    /// </summary>
+    public static IEnumerable<KeyValuePair<string, FunctionType>> EnumerateExtensions(Type objType)
+    {
+        foreach (var kv in objType.ExtensionMethods) yield return kv;
+
+        switch (objType)
+        {
+            case ClassType ct:
+                for (var cur = ct.BaseClass; cur != null; cur = cur.BaseClass)
+                    foreach (var kv in cur.ExtensionMethods) yield return kv;
+                foreach (var iface in ct.Interfaces)
+                {
+                    foreach (var kv in iface.ExtensionMethods) yield return kv;
+                    foreach (var b in BaseInterfacesOf(iface))
+                        foreach (var kv in b.ExtensionMethods) yield return kv;
+                }
+                break;
+            case InterfaceType it:
+                foreach (var b in BaseInterfacesOf(it))
+                    foreach (var kv in b.ExtensionMethods) yield return kv;
+                break;
+        }
+    }
+
+    private static IEnumerable<InterfaceType> BaseInterfacesOf(InterfaceType iface)
+    {
+        var seen = new HashSet<InterfaceType>();
+        var stack = new Stack<InterfaceType>(iface.BaseInterfaces);
+        while (stack.Count > 0)
+        {
+            var cur = stack.Pop();
+            if (!seen.Add(cur)) continue;
+            yield return cur;
+            foreach (var bb in cur.BaseInterfaces) stack.Push(bb);
+        }
+    }
+
     /// <summary>
     /// The type key. This is a string representation of the type, and is used to identify the type in the type table.
     /// </summary>

@@ -420,6 +420,17 @@ public sealed class CompletionHandler(LuxWorkspace workspace) : CompletionHandle
                         Detail = workspace.FormatType(result.Types, method.ID)
                     });
                 }
+                foreach (var (name, method) in it.ExtensionMethods)
+                {
+                    if (name.StartsWith("__")) continue;
+                    if (!seen.Add(name)) continue;
+                    ifaceItems.Add(new CompletionItem
+                    {
+                        Label = name,
+                        Kind = CompletionItemKind.Method,
+                        Detail = "(extension) " + workspace.FormatType(result.Types, method.ID)
+                    });
+                }
                 foreach (var bi in it.BaseInterfaces) Walk(bi);
             }
             Walk(ifaceType);
@@ -478,6 +489,18 @@ public sealed class CompletionHandler(LuxWorkspace workspace) : CompletionHandle
                 }
             }
 
+            foreach (var (name, method) in Lux.IR.Type.EnumerateExtensions(classType))
+            {
+                if (name.StartsWith("__")) continue;
+                if (!seen.Add(name)) continue;
+                classItems.Add(new CompletionItem
+                {
+                    Label = name,
+                    Kind = CompletionItemKind.Method,
+                    Detail = "(extension) " + workspace.FormatType(result.Types, method.ID)
+                });
+            }
+
             if (classType.ConstructorType != null)
             {
                 classItems.Add(new CompletionItem
@@ -491,7 +514,25 @@ public sealed class CompletionHandler(LuxWorkspace workspace) : CompletionHandle
             return classItems;
         }
 
-        if (finalType is not StructType finalStruct) return new List<CompletionItem>();
+        if (finalType is not StructType finalStruct)
+        {
+            // Primitive (or other non-member) receiver: still offer extension methods
+            // declared on it via `extend number` / `extend string`.
+            var extItems = new List<CompletionItem>();
+            var extSeen = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var (name, method) in Lux.IR.Type.EnumerateExtensions(finalType))
+            {
+                if (name.StartsWith("__")) continue;
+                if (!extSeen.Add(name)) continue;
+                extItems.Add(new CompletionItem
+                {
+                    Label = name,
+                    Kind = CompletionItemKind.Method,
+                    Detail = "(extension) " + workspace.FormatType(result.Types, method.ID)
+                });
+            }
+            return extItems;
+        }
 
         var structItems = new List<CompletionItem>();
         foreach (var f in finalStruct.Fields)

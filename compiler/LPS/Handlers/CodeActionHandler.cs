@@ -157,6 +157,8 @@ public sealed class CodeActionHandler(LuxWorkspace workspace) : CodeActionHandle
         foreach (var (name, method) in iface.Methods)
         {
             if (!existing.Add(name)) continue;
+            // Default methods carry an implementation; they are inherited, not required.
+            if (iface.DefaultMethods.Contains(name)) continue;
             stubs.Add(BuildMethodStub(name, method, result));
         }
         foreach (var b in iface.BaseInterfaces)

@@ -894,7 +894,10 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
                 pc.Diag.Report(method.Name.Span, DiagnosticCode.ErrDuplicateExtension,
                     method.Name.Name, TypeName(pc, target.ID));
             else
+            {
                 target.ExtensionMethods[method.Name.Name] = ft;
+                target.ExtensionMethodNodes[method.Name.Name] = method;
+            }
         }
     }
 
@@ -943,28 +946,10 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
     /// base classes, or its implemented/extended interfaces. Returns the (self-prefixed)
     /// signature and the type the extension was declared on.
     /// </summary>
-    private (FunctionType?, Type?) ResolveExtensionMethod(Type objType, string name)
+    private static (FunctionType?, Type?) ResolveExtensionMethod(Type objType, string name)
     {
-        if (objType.ExtensionMethods.TryGetValue(name, out var direct)) return (direct, objType);
-
-        if (objType is ClassType ct)
-        {
-            for (var cur = ct.BaseClass; cur != null; cur = cur.BaseClass)
-                if (cur.ExtensionMethods.TryGetValue(name, out var bft)) return (bft, cur);
-            foreach (var iface in ct.Interfaces)
-            {
-                if (iface.ExtensionMethods.TryGetValue(name, out var ift)) return (ift, iface);
-                foreach (var b in AllBaseInterfaces(iface))
-                    if (b.ExtensionMethods.TryGetValue(name, out var bift)) return (bift, b);
-            }
-        }
-        else if (objType is InterfaceType it)
-        {
-            foreach (var b in AllBaseInterfaces(it))
-                if (b.ExtensionMethods.TryGetValue(name, out var bift)) return (bift, b);
-        }
-
-        return (null, null);
+        var (fn, target) = Type.ResolveExtension(objType, name);
+        return (fn, target);
     }
 
     /// <summary>
