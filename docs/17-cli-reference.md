@@ -14,7 +14,7 @@ Run `lux help` for a one-screen summary. The sections below are the complete ref
 
 Scaffolds a new Lux project in the current directory. Creates:
 
-- `lux.toml` with sensible defaults (`target = "lua54"`, `source = "src"`, `output = "out"`)
+- `lux.toml` with sensible defaults (`target = "5.4"`, `source = "src"`, `output = "out"`)
 - `src/` and `out/` directories
 - `.gitignore` with `out/` and `lux_modules/` pre-listed
 
