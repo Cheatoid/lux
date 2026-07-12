@@ -179,7 +179,7 @@ internal partial class IRVisitor
         LuxParser.FuncBodyContext ctx)
     {
         var parameters = VisitParamListContent(ctx.paramList());
-        var returnType = VisitTypeAnnotationOpt(ctx.typeAnnotation());
+        var returnType = VisitFuncReturnOpt(ctx.funcReturn());
         var (body, ret) = VisitBlockContent(ctx.block());
         return (parameters, returnType, body, ret);
     }
@@ -188,8 +188,28 @@ internal partial class IRVisitor
         LuxParser.FuncSignatureContext ctx)
     {
         var parameters = VisitParamListContent(ctx.paramList());
-        var returnType = VisitTypeAnnotationOpt(ctx.typeAnnotation());
+        var returnType = VisitFuncReturnOpt(ctx.funcReturn());
         return (parameters, returnType);
+    }
+
+    /// <summary>
+    /// A function return is either a plain type or a type predicate <c>param is Type</c>
+    /// (produces a <see cref="TypePredicateRef"/>).
+    /// </summary>
+    private TypeRef? VisitFuncReturnOpt(LuxParser.FuncReturnContext? ctx)
+    {
+        switch (ctx)
+        {
+            case null:
+                return null;
+            case LuxParser.PredicateReturnContext pr:
+                return new TypePredicateRef(NewNodeID, SpanFromCtx(pr),
+                    NameRefFromTerm(pr.NAME()), (TypeRef)Visit(pr.typeExpr()));
+            case LuxParser.PlainReturnContext pl:
+                return (TypeRef)Visit(pl.typeExpr());
+            default:
+                return null;
+        }
     }
 
     private List<Parameter> VisitParamListContent(LuxParser.ParamListContext? ctx)

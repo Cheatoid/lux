@@ -816,6 +816,20 @@ public interface ILuxVisitor<Result> : IParseTreeVisitor<Result> {
 	/// <return>The visitor result.</return>
 	Result VisitFuncSignature([NotNull] LuxParser.FuncSignatureContext context);
 	/// <summary>
+	/// Visit a parse tree produced by the <c>PredicateReturn</c>
+	/// labeled alternative in <see cref="LuxParser.funcReturn"/>.
+	/// </summary>
+	/// <param name="context">The parse tree.</param>
+	/// <return>The visitor result.</return>
+	Result VisitPredicateReturn([NotNull] LuxParser.PredicateReturnContext context);
+	/// <summary>
+	/// Visit a parse tree produced by the <c>PlainReturn</c>
+	/// labeled alternative in <see cref="LuxParser.funcReturn"/>.
+	/// </summary>
+	/// <param name="context">The parse tree.</param>
+	/// <return>The visitor result.</return>
+	Result VisitPlainReturn([NotNull] LuxParser.PlainReturnContext context);
+	/// <summary>
 	/// Visit a parse tree produced by <see cref="LuxParser.declareModuleBlock"/>.
 	/// </summary>
 	/// <param name="context">The parse tree.</param>

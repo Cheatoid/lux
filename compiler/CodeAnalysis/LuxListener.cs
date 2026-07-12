@@ -1365,6 +1365,30 @@ public interface ILuxListener : IParseTreeListener {
 	/// <param name="context">The parse tree.</param>
 	void ExitFuncSignature([NotNull] LuxParser.FuncSignatureContext context);
 	/// <summary>
+	/// Enter a parse tree produced by the <c>PredicateReturn</c>
+	/// labeled alternative in <see cref="LuxParser.funcReturn"/>.
+	/// </summary>
+	/// <param name="context">The parse tree.</param>
+	void EnterPredicateReturn([NotNull] LuxParser.PredicateReturnContext context);
+	/// <summary>
+	/// Exit a parse tree produced by the <c>PredicateReturn</c>
+	/// labeled alternative in <see cref="LuxParser.funcReturn"/>.
+	/// </summary>
+	/// <param name="context">The parse tree.</param>
+	void ExitPredicateReturn([NotNull] LuxParser.PredicateReturnContext context);
+	/// <summary>
+	/// Enter a parse tree produced by the <c>PlainReturn</c>
+	/// labeled alternative in <see cref="LuxParser.funcReturn"/>.
+	/// </summary>
+	/// <param name="context">The parse tree.</param>
+	void EnterPlainReturn([NotNull] LuxParser.PlainReturnContext context);
+	/// <summary>
+	/// Exit a parse tree produced by the <c>PlainReturn</c>
+	/// labeled alternative in <see cref="LuxParser.funcReturn"/>.
+	/// </summary>
+	/// <param name="context">The parse tree.</param>
+	void ExitPlainReturn([NotNull] LuxParser.PlainReturnContext context);
+	/// <summary>
 	/// Enter a parse tree produced by <see cref="LuxParser.declareModuleBlock"/>.
 	/// </summary>
 	/// <param name="context">The parse tree.</param>

@@ -264,7 +264,7 @@ public sealed class SemanticTokensHandler(LuxWorkspace workspace) : SemanticToke
                 or LuxLexer.GOTO or LuxLexer.IF or LuxLexer.IN or LuxLexer.LOCAL or LuxLexer.NIL
                 or LuxLexer.NOT or LuxLexer.OR or LuxLexer.REPEAT or LuxLexer.RETURN
                 or LuxLexer.THEN or LuxLexer.TRUE or LuxLexer.UNTIL or LuxLexer.WHILE
-                or LuxLexer.AS or LuxLexer.DECLARE or LuxLexer.EXPORT or LuxLexer.FROM
+                or LuxLexer.AS or LuxLexer.IS or LuxLexer.DECLARE or LuxLexer.EXPORT or LuxLexer.FROM
                 or LuxLexer.ASYNC or LuxLexer.AWAIT or LuxLexer.CASE or LuxLexer.ENUM
                 or LuxLexer.IMPORT or LuxLexer.MATCH or LuxLexer.META or LuxLexer.MODULE
                 or LuxLexer.MUT or LuxLexer.WHEN or LuxLexer.CLASS or LuxLexer.INTERFACE

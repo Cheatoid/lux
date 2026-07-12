@@ -37,6 +37,17 @@ public sealed class FunctionTypeRef(NodeID id, TextSpan span, List<TypeRef> para
     public TypeRef ReturnType { get; } = returnType;
 }
 
+/// <summary>
+/// A type-predicate return annotation <c>param is Type</c>. The function's runtime return type is
+/// <c>boolean</c>; <see cref="TargetType"/> is the type <see cref="ParamName"/> is narrowed to.
+/// Resolved by <see cref="Passes.ResolveTypeRefsPass"/> to <c>boolean</c>, with the target resolved separately.
+/// </summary>
+public sealed class TypePredicateRef(NodeID id, TextSpan span, NameRef paramName, TypeRef targetType) : TypeRef(id, span, TypeKind.Predicate)
+{
+    public NameRef ParamName { get; } = paramName;
+    public TypeRef TargetType { get; } = targetType;
+}
+
 public sealed class MapTypeRef(NodeID id, TextSpan span, TypeRef keyType, TypeRef valueType) : TypeRef(id, span, TypeKind.TableMap)
 {
     public TypeRef KeyType { get; } = keyType;

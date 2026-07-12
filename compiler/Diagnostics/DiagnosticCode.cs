@@ -176,6 +176,11 @@ public enum DiagnosticCode
     [Format("Extension method '{0}' is already defined on type '{1}'")]
     ErrDuplicateExtension = 0x200F,
 
+    [Level(DiagnosticLevel.Error)]
+    [Category(DiagnosticCategory.Type)]
+    [Format("Type predicate refers to '{0}', which is not a parameter of this function")]
+    ErrUnknownPredicateParam = 0x2010,
+
     #endregion
 
     #region Module

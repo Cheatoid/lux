@@ -126,6 +126,31 @@ end
 
 Compiles to `type(x) == "number"`.
 
+## Type Predicates (custom guards)
+
+A function whose return is written `param is Type` is a **type predicate**: it returns a
+`boolean` at runtime, and where the call appears as an `if` condition the compiler narrows the
+argument bound to `param`. This is the way to recover a precise type from `any` or untyped Lua
+data (JSON, external APIs) — something `is`/`instanceof` can't do for arbitrary shapes.
+
+```lux
+function isString(value: any): value is string
+    return type(value) == "string"
+end
+
+function process(input: string | number)
+    if isString(input) then
+        print(#input)          -- input narrowed to string here
+    else
+        print(input + 1)        -- input narrowed to number here
+    end
+end
+```
+
+The predicate is erased at compile time — the guard is just a boolean-returning function. Like
+`as`, it is a trust-me assertion: the compiler believes the predicate, so a wrong check narrows
+to the wrong type. The named parameter must exist, and the guard must return on all paths.
+
 ## Type Cast Expression (`as`)
 
 Assert a type at compile-time (no runtime check):

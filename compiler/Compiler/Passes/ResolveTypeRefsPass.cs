@@ -676,6 +676,14 @@ public class ResolveTypeRefsPass() : Pass(PassName, PassScope.PerBuild)
 
         var lookupScope = _currentScope != ScopeID.Invalid ? _currentScope : _pkg.Root;
 
+        if (tr is TypePredicateRef tpr)
+        {
+            // `param is Type` — resolve the narrowed-to target; the guard's runtime type is boolean.
+            ResolveTypeRef(tt, tpr.TargetType);
+            tr.ResolvedType = tt.PrimBool.ID;
+            return tt.PrimBool;
+        }
+
         if (tr is NamedTypeRef nrt)
         {
             if (_pkg.Scopes.Lookup(lookupScope, nrt.Name.Name, out var symId)

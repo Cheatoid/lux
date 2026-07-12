@@ -1604,6 +1604,34 @@ public partial class LuxBaseListener : ILuxListener {
 	/// <param name="context">The parse tree.</param>
 	public virtual void ExitFuncSignature([NotNull] LuxParser.FuncSignatureContext context) { }
 	/// <summary>
+	/// Enter a parse tree produced by the <c>PredicateReturn</c>
+	/// labeled alternative in <see cref="LuxParser.funcReturn"/>.
+	/// <para>The default implementation does nothing.</para>
+	/// </summary>
+	/// <param name="context">The parse tree.</param>
+	public virtual void EnterPredicateReturn([NotNull] LuxParser.PredicateReturnContext context) { }
+	/// <summary>
+	/// Exit a parse tree produced by the <c>PredicateReturn</c>
+	/// labeled alternative in <see cref="LuxParser.funcReturn"/>.
+	/// <para>The default implementation does nothing.</para>
+	/// </summary>
+	/// <param name="context">The parse tree.</param>
+	public virtual void ExitPredicateReturn([NotNull] LuxParser.PredicateReturnContext context) { }
+	/// <summary>
+	/// Enter a parse tree produced by the <c>PlainReturn</c>
+	/// labeled alternative in <see cref="LuxParser.funcReturn"/>.
+	/// <para>The default implementation does nothing.</para>
+	/// </summary>
+	/// <param name="context">The parse tree.</param>
+	public virtual void EnterPlainReturn([NotNull] LuxParser.PlainReturnContext context) { }
+	/// <summary>
+	/// Exit a parse tree produced by the <c>PlainReturn</c>
+	/// labeled alternative in <see cref="LuxParser.funcReturn"/>.
+	/// <para>The default implementation does nothing.</para>
+	/// </summary>
+	/// <param name="context">The parse tree.</param>
+	public virtual void ExitPlainReturn([NotNull] LuxParser.PlainReturnContext context) { }
+	/// <summary>
 	/// Enter a parse tree produced by <see cref="LuxParser.declareModuleBlock"/>.
 	/// <para>The default implementation does nothing.</para>
 	/// </summary>

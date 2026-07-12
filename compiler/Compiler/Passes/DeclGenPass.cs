@@ -413,7 +413,10 @@ public sealed class DeclGenPass() : Pass(PassName, PassScope.PerBuild, true)
         if (!ctx.Types.GetByID(sym.Type, out var typ) || typ is not FunctionType ft) return;
 
         sb.Append(": ");
-        sb.Append(FormatType(ctx, ft.ReturnType));
+        if (ft.Predicate != null)
+            sb.Append($"{ft.Predicate.ParamName} is {FormatType(ctx, ft.Predicate.TargetType)}");
+        else
+            sb.Append(FormatType(ctx, ft.ReturnType));
     }
 
     /// <summary>
@@ -423,7 +426,13 @@ public sealed class DeclGenPass() : Pass(PassName, PassScope.PerBuild, true)
     /// </summary>
     private void EmitReturnType(StringBuilder sb, PassContext ctx, PackageContext pkg, TypeRef? returnType)
     {
-        if (returnType == null || returnType.ResolvedType == TypID.Invalid) return;
+        if (returnType == null) return;
+        if (returnType is TypePredicateRef pred && ctx.Types.GetByID(pred.TargetType.ResolvedType, out var target))
+        {
+            sb.Append($": {pred.ParamName.Name} is {FormatType(ctx, target)}");
+            return;
+        }
+        if (returnType.ResolvedType == TypID.Invalid) return;
         if (!ctx.Types.GetByID(returnType.ResolvedType, out var typ)) return;
 
         sb.Append(": ");

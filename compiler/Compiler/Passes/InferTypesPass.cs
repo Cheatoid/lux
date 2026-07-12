@@ -406,7 +406,8 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
                 var ret = dfd.ReturnType != null && dfd.ReturnType.ResolvedType != TypID.Invalid
                     ? GetType(pc, dfd.ReturnType.ResolvedType)
                     : pc.Types.PrimNil;
-                var funcTyp = pc.Types.FuncOf(paramTypes, ret, dfdIsVararg, dfdVarargType, isAsync: dfd.IsAsync);
+                var funcTyp = pc.Types.FuncOf(paramTypes, ret, dfdIsVararg, dfdVarargType, isAsync: dfd.IsAsync,
+                    predicate: BuildPredicate(pc, dfd.ReturnType, dfd.Parameters));
                 if (dfd.NamePath.Count == 1 && dfd.MethodName == null)
                 {
                     pc.Pkg!.Syms.SetType(dfd.NamePath[0].Sym, funcTyp);
@@ -549,7 +550,8 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
                 retType = inheritedRet;
             else
                 retType = pc.Types.PrimNil;
-            var funcTypId = pc.Types.FuncOf(methodParams, retType, isVararg, varargType, defaultIndices.Count > 0 ? defaultIndices : null, method.IsAsync);
+            var funcTypId = pc.Types.FuncOf(methodParams, retType, isVararg, varargType, defaultIndices.Count > 0 ? defaultIndices : null, method.IsAsync,
+                predicate: BuildPredicate(pc, method.ReturnType, method.Parameters));
             var ft = (FunctionType)GetType(pc, funcTypId);
             var methodSide = Lux.Compiler.Annotations.BuiltinAnnotations.ExtractSide(method.Annotations,
                 (ann, badName) => ReportBadSide(pc, ann, badName));
@@ -822,7 +824,8 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
             var retType = method.ReturnType != null && method.ReturnType.ResolvedType != TypID.Invalid
                 ? GetType(pc, method.ReturnType.ResolvedType) : pc.Types.PrimNil;
             var ifaceFt = (FunctionType)GetType(pc,
-                pc.Types.FuncOf(methodParams, retType, ifaceIsVararg, ifaceVarargType, isAsync: method.IsAsync));
+                pc.Types.FuncOf(methodParams, retType, ifaceIsVararg, ifaceVarargType, isAsync: method.IsAsync,
+                    predicate: BuildPredicate(pc, method.ReturnType, method.Parameters)));
             var methodSide = Lux.Compiler.Annotations.BuiltinAnnotations.ExtractSide(method.Annotations,
                 (ann, badName) => ReportBadSide(pc, ann, badName));
             AppendOverload(ifaceType.Methods, ifaceType.MethodOverloads,
@@ -995,6 +998,38 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
             pc.Diag.Report(ann.Span, Diagnostics.DiagnosticCode.ErrUnknownSideName, badName);
     }
 
+    /// <summary>
+    /// Builds the type-predicate marker from a <c>param is Type</c> return annotation, validating
+    /// that the named parameter exists. Returns null for a plain return type.
+    /// </summary>
+    /// <summary>
+    /// Narrows <paramref name="path"/> to <paramref name="targetType"/> in the then-branch and to
+    /// the complement in the else-branch — the same shape as an <c>is</c> test.
+    /// </summary>
+    private void NarrowPredicate(PassContext pc, AccessPath? path, TypID targetType,
+        List<(AccessPath, TypID)> thenN, List<(AccessPath, TypID)> elseN)
+    {
+        if (path == null || targetType == TypID.Invalid) return;
+        var current = ResolveAccessPathType(pc, path);
+        thenN.Add((path, targetType));
+        var subtracted = SubtractType(pc, current, targetType);
+        if (subtracted != TypID.Invalid) elseN.Add((path, subtracted));
+    }
+
+    private TypePredicate? BuildPredicate(PassContext pc, TypeRef? returnTypeRef, List<Parameter> parameters)
+    {
+        if (returnTypeRef is not TypePredicateRef tpr) return null;
+        var pname = tpr.ParamName.Name;
+        if (parameters.All(p => p.Name.Name != pname))
+        {
+            pc.Diag.Report(tpr.ParamName.Span, DiagnosticCode.ErrUnknownPredicateParam, pname);
+            return null;
+        }
+        var target = tpr.TargetType.ResolvedType != TypID.Invalid
+            ? GetType(pc, tpr.TargetType.ResolvedType) : pc.Types.PrimAny;
+        return new TypePredicate(pname, target);
+    }
+
     private void ResolveFunctionLike(PassContext pc, List<Parameter> parameters, TypeRef? returnTypeRef,
         List<Stmt> body, ReturnStmt? returnStmt, NameRef? funcName, bool isAsync = false)
     {
@@ -1100,7 +1135,8 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
         }
 
         var funcTyp = pc.Types.FuncOf(paramTypes, returnType, isVararg, varargType,
-            defaultIndices.Count > 0 ? defaultIndices : null, isAsync);
+            defaultIndices.Count > 0 ? defaultIndices : null, isAsync,
+            predicate: BuildPredicate(pc, returnTypeRef, parameters));
         if (funcName is { Sym: { } funcSym } && funcSym != SymID.Invalid)
         {
             pc.Pkg!.Syms.SetType(funcSym, funcTyp);
@@ -3212,6 +3248,33 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
                 var subtracted = SubtractType(pc, current, tchk.TargetType.ResolvedType);
                 if (subtracted != TypID.Invalid)
                     elseN.Add((path, subtracted));
+            }
+            return (thenN, elseN);
+        }
+
+        // A call to a type-predicate guard (`param is Type`) narrows the argument bound to `param`.
+        if (c is FunctionCallExpr predCall
+            && pc.Pkg!.Types.GetByID(SynthesizeExpr(pc, predCall.Callee), out var calleeT)
+            && calleeT is FunctionType pft && pft.Predicate is { } pred)
+        {
+            var idx = pft.ParamNames.IndexOf(pred.ParamName);
+            if (idx >= 0 && idx < predCall.Arguments.Count)
+                NarrowPredicate(pc, GetAccessPath(predCall.Arguments[idx]), pred.TargetType.ID, thenN, elseN);
+            return (thenN, elseN);
+        }
+
+        if (c is MethodCallExpr predMc
+            && pc.Pkg!.Types.GetByID(SynthesizeExpr(pc, predMc.Object), out var recvT))
+        {
+            var mfn = ResolveMethodOnType(recvT, predMc.MethodName.Name);
+            if (mfn?.Predicate is { } mpred)
+            {
+                var idx = mfn.ParamNames.IndexOf(mpred.ParamName);
+                // Param 0 is the implicit `self` (the receiver); later params map to explicit args.
+                Expr? subject = idx == 0 ? predMc.Object
+                    : idx - 1 >= 0 && idx - 1 < predMc.Arguments.Count ? predMc.Arguments[idx - 1] : null;
+                if (subject != null)
+                    NarrowPredicate(pc, GetAccessPath(subject), mpred.TargetType.ID, thenN, elseN);
             }
             return (thenN, elseN);
         }

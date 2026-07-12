@@ -451,7 +451,14 @@ declareClassMember
 //   ()
 
 funcSignature
-    : typeParamList? LPAREN paramList? RPAREN typeAnnotation?
+    : typeParamList? LPAREN paramList? RPAREN funcReturn?
+    ;
+
+// A function's return: either a plain type or a type predicate `param is Type`
+// (a boolean at runtime that narrows `param` to `Type` where the call is used as a guard).
+funcReturn
+    : COLON NAME IS typeExpr                                    # PredicateReturn
+    | COLON typeExpr                                            # PlainReturn
     ;
 
 // --- Declare Module Block ---
@@ -502,7 +509,7 @@ funcName
 //   function baz(): (number, string) ... end   -- multi-return
 
 funcBody
-    : typeParamList? LPAREN paramList? RPAREN typeAnnotation? block END
+    : typeParamList? LPAREN paramList? RPAREN funcReturn? block END
     ;
 
 // --- Parameter List ---

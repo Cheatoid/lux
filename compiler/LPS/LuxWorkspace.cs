@@ -851,7 +851,10 @@ public sealed class LuxWorkspace
             parts.Add($"...: {vaType}");
         }
         var prefix = ft.IsAsync ? "async " : "";
-        return $"{prefix}({string.Join(", ", parts)}) -> {FormatType(types, ft.ReturnType)}";
+        var ret = ft.Predicate != null
+            ? $"{ft.Predicate.ParamName} is {FormatType(types, ft.Predicate.TargetType)}"
+            : FormatType(types, ft.ReturnType);
+        return $"{prefix}({string.Join(", ", parts)}) -> {ret}";
     }
 
     /// <summary>

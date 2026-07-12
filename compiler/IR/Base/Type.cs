@@ -31,7 +31,15 @@ public enum TypeKind
     TypeParameter,
     Parameterized,
     Variadic,
+    Predicate,
 }
+
+/// <summary>
+/// A type predicate carried by a guard function's signature: <c>param is TargetType</c>.
+/// The function returns a boolean at runtime; where the call appears as an <c>if</c> condition,
+/// the argument bound to <see cref="ParamName"/> is narrowed to <see cref="TargetType"/>.
+/// </summary>
+public sealed record TypePredicate(string ParamName, Type TargetType);
 
 /// <summary>
 /// Represents a type in the type system. A type is a set of values that share common properties and operations. 
@@ -329,6 +337,13 @@ public sealed class FunctionType : Type
     public bool IsAsync { get; }
     public int CallbackParamIndex { get; set; } = -1;
 
+    /// <summary>
+    /// Non-null when this is a guard function whose signature is a type predicate
+    /// (<c>param is Type</c>). The runtime <see cref="ReturnType"/> stays <c>boolean</c>; this
+    /// drives call-site narrowing. Set before the type is interned so it is part of the key.
+    /// </summary>
+    public TypePredicate? Predicate { get; set; }
+
     public int MinParamCount => ParamTypes.Count - DefaultParams.Count;
 
     public FunctionType(IEnumerable<Tuple<string, Type>> paramTypes, Type returnType, bool isVararg = false, Type? varargType = null, List<int>? defaultParams = null, bool isAsync = false) : base(TypeKind.Function)
@@ -421,7 +436,10 @@ public sealed class FunctionType : Type
             parameters.Add($"...: {vaType}");
         }
 
-        return $"{prefix}({string.Join(", ", parameters)}) -> {ReturnType.Key}";
+        var ret = Predicate != null
+            ? $"{Predicate.ParamName} is {Predicate.TargetType.Key}"
+            : ReturnType.Key.Value;
+        return $"{prefix}({string.Join(", ", parameters)}) -> {ret}";
     }
 }
 
@@ -822,9 +840,12 @@ public sealed class TypeTable
         return DeclareType(funcType);
     }
 
-    public TypID FuncOf(IEnumerable<Tuple<string, Type>> paramTypes, Type returnType, bool isVararg = false, Type? varargType = null, List<int>? defaultParams = null, bool isAsync = false)
+    public TypID FuncOf(IEnumerable<Tuple<string, Type>> paramTypes, Type returnType, bool isVararg = false, Type? varargType = null, List<int>? defaultParams = null, bool isAsync = false, TypePredicate? predicate = null)
     {
-        var funcType = new FunctionType(paramTypes, returnType, isVararg, varargType, defaultParams, isAsync);
+        var funcType = new FunctionType(paramTypes, returnType, isVararg, varargType, defaultParams, isAsync)
+        {
+            Predicate = predicate
+        };
         return DeclareType(funcType);
     }
 
