@@ -650,7 +650,9 @@ internal partial class IRVisitor
 
     public override Node VisitExtendDecl(LuxParser.ExtendDeclContext context)
     {
-        var target = (TypeRef)Visit(context.typeExpr());
+        // typeExpr is null when the extend head failed to parse (e.g. `extend function`);
+        // keep a null target and let later passes report the error without crashing.
+        var target = context.typeExpr() != null ? (TypeRef)Visit(context.typeExpr()) : null!;
         var methods = new List<ExtensionMethodNode>();
         foreach (var m in context.extendMethod())
         {

@@ -860,7 +860,11 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
 
     private Type? ResolveExtendTarget(PassContext pc, ExtendDecl ed)
     {
-        return ed.TargetType.ResolvedType == TypID.Invalid ? null : GetType(pc, ed.TargetType.ResolvedType);
+        // Null target (parse error) or an unresolved/`any` target is not extendable — skip it
+        // rather than crashing or polluting `any` with methods that would resolve everywhere.
+        if (ed.TargetType == null || ed.TargetType.ResolvedType == TypID.Invalid) return null;
+        var target = GetType(pc, ed.TargetType.ResolvedType);
+        return target.ID == pc.Types.PrimAny.ID ? null : target;
     }
 
     /// <summary>

@@ -519,7 +519,9 @@ public class ResolveTypeRefsPass() : Pass(PassName, PassScope.PerBuild)
             {
                 var prev = _currentScope;
                 _currentScope = ScopeOfDecl(extendDecl.ID);
-                ResolveTypeRef(tt, extendDecl.TargetType);
+                // TargetType is null when the `extend <target>` head failed to parse; the method
+                // bodies below are still resolved so the user gets full diagnostics, not a crash.
+                if (extendDecl.TargetType != null) ResolveTypeRef(tt, extendDecl.TargetType);
                 foreach (var method in extendDecl.Methods)
                 {
                     foreach (var p in method.Parameters)

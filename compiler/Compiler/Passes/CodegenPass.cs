@@ -2115,11 +2115,17 @@ public sealed class CodegenPass() : Pass(PassName, PassScope.PerBuild, true)
         return $"__ext_{sanitized}_{method}";
     }
 
+    // A valid extend target is a resolved, concrete type — not a parse-error null or bare `any`.
+    private static bool IsExtendableTarget(PassContext ctx, ExtendDecl ed)
+        => ed.TargetType != null
+           && ed.TargetType.ResolvedType != TypID.Invalid
+           && ed.TargetType.ResolvedType != ctx.Types.PrimAny.ID;
+
     private void EmitExtensionForwardDecls(PassContext ctx, LuaGenerator gen, List<Stmt> stmts)
     {
         var names = new List<string>();
         foreach (var stmt in stmts)
-            if (stmt is ExtendDecl ed && ed.TargetType.ResolvedType != TypID.Invalid)
+            if (stmt is ExtendDecl ed && IsExtendableTarget(ctx, ed))
                 foreach (var m in ed.Methods)
                     names.Add(ExtensionFnName(ctx, ed.TargetType.ResolvedType, m.Name.Name));
 
@@ -2132,7 +2138,7 @@ public sealed class CodegenPass() : Pass(PassName, PassScope.PerBuild, true)
 
     private void EmitExtendDecl(PassContext ctx, PackageContext pkg, LuaGenerator gen, ExtendDecl ed)
     {
-        if (ed.TargetType.ResolvedType == TypID.Invalid) return;
+        if (!IsExtendableTarget(ctx, ed)) return;
         foreach (var m in ed.Methods)
         {
             gen.Write("function ");
