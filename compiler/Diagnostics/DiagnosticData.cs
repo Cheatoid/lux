@@ -7,5 +7,6 @@ internal record DiagnosticData(
     DiagnosticCode Code,
     DiagnosticCategory Category,
     DiagnosticLevel Level,
-    string Format
+    string Format,
+    string? Help = null
 );

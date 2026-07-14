@@ -35,12 +35,13 @@ public enum DiagnosticCode
 
     [Level(DiagnosticLevel.Error)]
     [Category(DiagnosticCategory.Syntax)]
-    [Format("Unexpected end of file")]
+    [Format("unexpected end of file")]
+    [Help("a construct was left unfinished — check for a missing 'end', ')' or '}'")]
     ErrUnexpectedEOF = 0x0001,
-    
+
     [Level(DiagnosticLevel.Error)]
     [Category(DiagnosticCategory.Syntax)]
-    [Format("Unexpected token: {0}")]
+    [Format("{0}")]
     ErrUnexpectedToken = 0x0002,
     
     [Level(DiagnosticLevel.Error)]
@@ -69,7 +70,8 @@ public enum DiagnosticCode
     
     [Level(DiagnosticLevel.Error)]
     [Category(DiagnosticCategory.Semantic)]
-    [Format("Symbol '{0}' is not declared in this scope")]
+    [Format("cannot find '{0}' in this scope")]
+    [Help("declare '{0}', import it from another module, or check for a typo")]
     ErrUndeclaredSymbol = 0x1002,
     
     [Level(DiagnosticLevel.Error)]
@@ -103,13 +105,20 @@ public enum DiagnosticCode
     
     [Level(DiagnosticLevel.Error)]
     [Category(DiagnosticCategory.Type)]
-    [Format("Type mismatch: expected '{0}', but got '{1}'")]
+    [Format("expected '{0}', but got '{1}'")]
+    [Help("change the value to a '{0}', adjust the annotation, or use 'as {0}' to assert the type")]
     ErrTypeMismatch = 0x2001,
     
     [Level(DiagnosticLevel.Error)]
     [Category(DiagnosticCategory.Type)]
-    [Format("Type '{0}' is not indexable")]
+    [Format("type '{0}' cannot be indexed")]
     ErrTypeNotIndexable = 0x2002,
+
+    [Level(DiagnosticLevel.Error)]
+    [Category(DiagnosticCategory.Type)]
+    [Format("type '{0}' has no method '{1}'")]
+    [Help("check the method name for a typo, or add it to '{0}' with an 'extend {0} ... end' block")]
+    ErrNoSuchMethod = 0x2011,
     
     [Level(DiagnosticLevel.Error)]
     [Category(DiagnosticCategory.Type)]
@@ -118,7 +127,8 @@ public enum DiagnosticCode
     
     [Level(DiagnosticLevel.Error)]
     [Category(DiagnosticCategory.Type)]
-    [Format("Function parameter count mismatch: expected {0}, but got {1}")]
+    [Format("this function takes {0} argument(s), but {1} were supplied")]
+    [Help("pass {0} argument(s), or make trailing parameters optional with '?' or a default value")]
     ErrFuncParamMismatch = 0x2004,
     
     [Level(DiagnosticLevel.Error)]
@@ -168,7 +178,8 @@ public enum DiagnosticCode
 
     [Level(DiagnosticLevel.Error)]
     [Category(DiagnosticCategory.Type)]
-    [Format("Function with return type '{0}' must return a value on all code paths")]
+    [Format("not all code paths return a '{0}'")]
+    [Help("return a value from every branch, or make the return type nilable ('{0}?') or 'void'")]
     ErrMissingReturn = 0x200E,
 
     [Level(DiagnosticLevel.Error)]

@@ -28,7 +28,8 @@ public sealed class DiagnosticsBag
                 throw new InvalidOperationException($"Diagnostic code {code} is missing required attributes.");
             }
 
-            DiagnosticToData[code] = new DiagnosticData(code, categoryAttribute.Category, levelAttribute.Level, messageAttribute.Format);
+            var helpAttribute = field.GetCustomAttributes(typeof(HelpAttribute), false).FirstOrDefault() as HelpAttribute;
+            DiagnosticToData[code] = new DiagnosticData(code, categoryAttribute.Category, levelAttribute.Level, messageAttribute.Format, helpAttribute?.Help);
         }
     }
     
@@ -69,14 +70,26 @@ public sealed class DiagnosticsBag
     /// Reports a diagnostic to the bag. This is used to add a diagnostic to the bag, which can then be retrieved later using the <see cref="Diagnostics"/> property.
     /// </summary>
     public void Report(TextSpan span, DiagnosticCode code, params object[] args)
+        => ReportCore(span, code, null, null, args);
+
+    /// <summary>
+    /// Reports a diagnostic with an instance-specific <paramref name="help"/> line (and optional
+    /// <paramref name="notes"/>) that override the code's static <c>[Help]</c>. Used where the
+    /// guidance depends on the situation, e.g. translated parser errors.
+    /// </summary>
+    public void ReportWithHelp(TextSpan span, DiagnosticCode code, string? help, IReadOnlyList<string>? notes, params object[] args)
+        => ReportCore(span, code, help, notes, args);
+
+    private void ReportCore(TextSpan span, DiagnosticCode code, string? helpOverride, IReadOnlyList<string>? notes, object[] args)
     {
         if (!DiagnosticToData.TryGetValue(code, out var data))
         {
             throw new InvalidOperationException($"Diagnostic code {code} is not registered in the diagnostics bag.");
         }
-        
+
         var message = string.Format(data.Format, args);
-        var diagnostic = new Diagnostic(data.Level, data.Category, code, message, span);
+        var help = helpOverride ?? (data.Help != null ? string.Format(data.Help, args) : null);
+        var diagnostic = new Diagnostic(data.Level, data.Category, code, message, span, help, notes);
         _diagnostics.Add(diagnostic);
     }
 }

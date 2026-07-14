@@ -2270,8 +2270,8 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
 
             if (objType.Kind != TypeKind.PrimitiveAny)
             {
-                pc.Diag.Report(mc.MethodName.Span, DiagnosticCode.ErrTypeNotIndexable,
-                    $"{TypeName(pc, objTyp)} has no method '{mc.MethodName.Name}'");
+                pc.Diag.Report(mc.MethodName.Span, DiagnosticCode.ErrNoSuchMethod,
+                    TypeName(pc, objTyp), mc.MethodName.Name);
             }
             return pc.Types.PrimAny.ID;
         }
@@ -3597,6 +3597,49 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
     private string TypeName(PassContext pc, TypID id)
     {
         if (id == TypID.Invalid) return "<invalid>";
-        return pc.Pkg!.Types.GetByID(id, out var t) ? t.Key.Value : "<unknown>";
+        return pc.Pkg!.Types.GetByID(id, out var t) ? FormatTypeName(t) : "<unknown>";
+    }
+
+    /// <summary>
+    /// Renders a type as source-like text for diagnostics (e.g. <c>string</c>, <c>number[]</c>,
+    /// <c>(number) -&gt; string</c>, <c>Foo</c>) instead of the internal type key.
+    /// </summary>
+    private static string FormatTypeName(Type t)
+    {
+        switch (t)
+        {
+            case TableArrayType arr: return FormatTypeName(arr.ElementType) + "[]";
+            case TableMapType m: return $"{{ [{FormatTypeName(m.KeyType)}]: {FormatTypeName(m.ValueType)} }}";
+            case UnionType u: return string.Join(" | ", u.Types.Select(FormatTypeName));
+            case TupleType tup: return "(" + string.Join(", ", tup.Fields.Select(f => FormatTypeName(f.Type))) + ")";
+            case VariadicType v: return "..." + FormatTypeName(v.ElementType);
+            case FunctionType ft:
+            {
+                var ps = string.Join(", ", ft.ParamTypes.Select(FormatTypeName));
+                var ret = ft.Predicate != null
+                    ? $"{ft.Predicate.ParamName} is {FormatTypeName(ft.Predicate.TargetType)}"
+                    : FormatTypeName(ft.ReturnType);
+                return $"({ps}) -> {ret}";
+            }
+            case ClassType c: return c.Name;
+            case InterfaceType i: return i.Name;
+            case EnumType e: return e.Name;
+            case TypeParameterType tp: return tp.Name;
+            case StructType s: return "{ " + string.Join(", ", s.Fields.Select(f => $"{f.Name.Name}: {FormatTypeName(f.Type)}")) + " }";
+            case ParameterizedType pt: return $"{FormatTypeName(pt.Definition)}<{string.Join(", ", pt.Args.Select(a => a.ToString()))}>";
+            default:
+                return t.Kind switch
+                {
+                    TypeKind.PrimitiveNil => "nil",
+                    TypeKind.PrimitiveAny => "any",
+                    TypeKind.PrimitiveNumber => "number",
+                    TypeKind.PrimitiveBool => "boolean",
+                    TypeKind.PrimitiveString => "string",
+                    TypeKind.PrimitiveFunction => "function",
+                    TypeKind.PrimitiveThread => "thread",
+                    TypeKind.PrimitiveUserdata => "userdata",
+                    _ => "any"
+                };
+        }
     }
 }

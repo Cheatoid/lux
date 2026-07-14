@@ -125,7 +125,7 @@ internal static class Program
         if (!success)
         {
             foreach (var diag in compiler.Diagnostics.Diagnostics)
-                await Console.Error.WriteLineAsync(diag.ToString());
+                await Console.Error.WriteLineAsync(Lux.Diagnostics.DiagnosticRenderer.Render(diag) + "\n");
             await Console.Error.WriteLineAsync("Build FAILED.");
             return 1;
         }
@@ -374,7 +374,7 @@ internal static class Program
         if (!success)
         {
             foreach (var diag in compiler.Diagnostics.Diagnostics)
-                await Console.Error.WriteLineAsync(diag.ToString());
+                await Console.Error.WriteLineAsync(Lux.Diagnostics.DiagnosticRenderer.Render(diag) + "\n");
             await Console.Error.WriteLineAsync("Build FAILED.");
             return 1;
         }
@@ -574,7 +574,7 @@ internal static class Program
         if (!success)
         {
             foreach (var diag in compiler.Diagnostics.Diagnostics)
-                await Console.Error.WriteLineAsync(diag.ToString());
+                await Console.Error.WriteLineAsync(Lux.Diagnostics.DiagnosticRenderer.Render(diag) + "\n");
             await Console.Error.WriteLineAsync("Build FAILED.");
             return 1;
         }
@@ -907,7 +907,7 @@ internal static class Program
         if (!success)
         {
             foreach (var diag in compiler.Diagnostics.Diagnostics)
-                await Console.Error.WriteLineAsync(diag.ToString());
+                await Console.Error.WriteLineAsync(Lux.Diagnostics.DiagnosticRenderer.Render(diag) + "\n");
             await Console.Error.WriteLineAsync("lux test: compilation FAILED.");
             return 1;
         }
@@ -1324,7 +1324,7 @@ internal static class Program
         if (!compiler.Compile())
         {
             foreach (var d in compiler.Diagnostics.Diagnostics)
-                await Console.Error.WriteLineAsync(d.ToString());
+                await Console.Error.WriteLineAsync(Lux.Diagnostics.DiagnosticRenderer.Render(d) + "\n");
             return 1;
         }
 
