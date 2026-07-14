@@ -469,6 +469,9 @@ public sealed class DeclGenPass() : Pass(PassName, PassScope.PerBuild, true)
                 TypeKind.PrimitiveNumber => "number",
                 TypeKind.PrimitiveBool => "boolean",
                 TypeKind.PrimitiveString => "string",
+                TypeKind.PrimitiveFunction => "function",
+                TypeKind.PrimitiveThread => "thread",
+                TypeKind.PrimitiveUserdata => "userdata",
                 _ => "any"
             }
         };

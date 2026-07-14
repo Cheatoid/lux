@@ -9,8 +9,13 @@ internal partial class IRVisitor
         { "string", TypeKind.PrimitiveString },
         { "number", TypeKind.PrimitiveNumber },
         { "boolean", TypeKind.PrimitiveBool },
-        { "any", TypeKind.PrimitiveAny }
+        { "any", TypeKind.PrimitiveAny },
+        { "thread", TypeKind.PrimitiveThread },
+        { "userdata", TypeKind.PrimitiveUserdata }
     };
+
+    public override Node VisitBareFunctionType(LuxParser.BareFunctionTypeContext context)
+        => new PrimitiveTypeRef(NewNodeID, SpanFromCtx(context), TypeKind.PrimitiveFunction);
     
     public override Node VisitUnionType(LuxParser.UnionTypeContext context)
     {

@@ -1956,6 +1956,20 @@ public partial class LuxBaseListener : ILuxListener {
 	/// <param name="context">The parse tree.</param>
 	public virtual void ExitNilType([NotNull] LuxParser.NilTypeContext context) { }
 	/// <summary>
+	/// Enter a parse tree produced by the <c>BareFunctionType</c>
+	/// labeled alternative in <see cref="LuxParser.typeAtom"/>.
+	/// <para>The default implementation does nothing.</para>
+	/// </summary>
+	/// <param name="context">The parse tree.</param>
+	public virtual void EnterBareFunctionType([NotNull] LuxParser.BareFunctionTypeContext context) { }
+	/// <summary>
+	/// Exit a parse tree produced by the <c>BareFunctionType</c>
+	/// labeled alternative in <see cref="LuxParser.typeAtom"/>.
+	/// <para>The default implementation does nothing.</para>
+	/// </summary>
+	/// <param name="context">The parse tree.</param>
+	public virtual void ExitBareFunctionType([NotNull] LuxParser.BareFunctionTypeContext context) { }
+	/// <summary>
 	/// Enter a parse tree produced by the <c>NamedType</c>
 	/// labeled alternative in <see cref="LuxParser.typeAtom"/>.
 	/// <para>The default implementation does nothing.</para>

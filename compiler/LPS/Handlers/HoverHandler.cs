@@ -295,7 +295,7 @@ public sealed class HoverHandler(LuxWorkspace workspace) : HoverHandlerBase
 
         // Extension methods declared via `extend Type` — resolved on the type, its base
         // classes, or its implemented/extended interfaces (works for primitives too).
-        var (extFn, extTarget) = IR.Type.ResolveExtension(recvType, name);
+        var (extFn, extTarget) = IR.Type.ResolveExtension(recvType, name, result.Types.PrimFunction);
         if (extFn != null && extTarget != null)
         {
             var targetName = extTarget is ClassType ec ? ec.Name

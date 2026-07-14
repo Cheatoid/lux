@@ -19,6 +19,12 @@ public enum TypeKind
     PrimitiveBool,
     [Description("string")]
     PrimitiveString,
+    [Description("function")]
+    PrimitiveFunction,
+    [Description("thread")]
+    PrimitiveThread,
+    [Description("userdata")]
+    PrimitiveUserdata,
     TableArray,
     TableMap,
     Tuple,
@@ -72,9 +78,14 @@ public class Type(TypeKind kind)
     /// implemented/extended interfaces. Returns the self-prefixed signature and the type the
     /// extension was declared on. Shared by type inference and the language server.
     /// </summary>
-    public static (FunctionType? Fn, Type? Target) ResolveExtension(Type objType, string name)
+    public static (FunctionType? Fn, Type? Target) ResolveExtension(Type objType, string name, Type? functionCategory = null)
     {
         if (objType.ExtensionMethods.TryGetValue(name, out var direct)) return (direct, objType);
+
+        // Every concrete function signature inherits the extensions declared on `extend function`.
+        if (objType is FunctionType && functionCategory != null
+            && functionCategory.ExtensionMethods.TryGetValue(name, out var fnExt))
+            return (fnExt, functionCategory);
 
         switch (objType)
         {
@@ -102,9 +113,12 @@ public class Type(TypeKind kind)
     /// those on base classes and implemented/extended interfaces. Used by editor completion.
     /// May yield the same name more than once (nearest-first); callers dedupe.
     /// </summary>
-    public static IEnumerable<KeyValuePair<string, FunctionType>> EnumerateExtensions(Type objType)
+    public static IEnumerable<KeyValuePair<string, FunctionType>> EnumerateExtensions(Type objType, Type? functionCategory = null)
     {
         foreach (var kv in objType.ExtensionMethods) yield return kv;
+
+        if (objType is FunctionType && functionCategory != null)
+            foreach (var kv in functionCategory.ExtensionMethods) yield return kv;
 
         switch (objType)
         {
@@ -679,7 +693,16 @@ public sealed class TypeTable
     /// The ID of the primitive string.
     /// </summary>
     public Type PrimString { get; }
-    
+
+    /// <summary>Canonical "any function" type — the target of <c>extend function</c>.</summary>
+    public Type PrimFunction { get; }
+
+    /// <summary>Canonical Lua <c>thread</c> (coroutine) type.</summary>
+    public Type PrimThread { get; }
+
+    /// <summary>Canonical Lua <c>userdata</c> type.</summary>
+    public Type PrimUserdata { get; }
+
     private readonly IDAlloc<TypID> _typeAlloc;
     private readonly Dictionary<TypeKey, TypID> _types = new();
     private readonly Dictionary<TypID, Type> _byID = new();
@@ -696,6 +719,9 @@ public sealed class TypeTable
         PrimNumber = DeclareType(new Type(TypeKind.PrimitiveNumber));
         PrimBool = DeclareType(new Type(TypeKind.PrimitiveBool));
         PrimString = DeclareType(new Type(TypeKind.PrimitiveString));
+        PrimFunction = DeclareType(new Type(TypeKind.PrimitiveFunction));
+        PrimThread = DeclareType(new Type(TypeKind.PrimitiveThread));
+        PrimUserdata = DeclareType(new Type(TypeKind.PrimitiveUserdata));
     }
 
     /// <summary>

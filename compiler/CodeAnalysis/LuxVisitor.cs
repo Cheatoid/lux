@@ -992,6 +992,13 @@ public interface ILuxVisitor<Result> : IParseTreeVisitor<Result> {
 	/// <return>The visitor result.</return>
 	Result VisitNilType([NotNull] LuxParser.NilTypeContext context);
 	/// <summary>
+	/// Visit a parse tree produced by the <c>BareFunctionType</c>
+	/// labeled alternative in <see cref="LuxParser.typeAtom"/>.
+	/// </summary>
+	/// <param name="context">The parse tree.</param>
+	/// <return>The visitor result.</return>
+	Result VisitBareFunctionType([NotNull] LuxParser.BareFunctionTypeContext context);
+	/// <summary>
 	/// Visit a parse tree produced by the <c>NamedType</c>
 	/// labeled alternative in <see cref="LuxParser.typeAtom"/>.
 	/// </summary>

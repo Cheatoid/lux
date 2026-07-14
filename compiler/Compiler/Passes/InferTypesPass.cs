@@ -953,10 +953,9 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
     /// base classes, or its implemented/extended interfaces. Returns the (self-prefixed)
     /// signature and the type the extension was declared on.
     /// </summary>
-    private static (FunctionType?, Type?) ResolveExtensionMethod(Type objType, string name)
+    private static (FunctionType?, Type?) ResolveExtensionMethod(PassContext pc, Type objType, string name)
     {
-        var (fn, target) = Type.ResolveExtension(objType, name);
-        return (fn, target);
+        return Type.ResolveExtension(objType, name, pc.Types.PrimFunction);
     }
 
     /// <summary>
@@ -2132,7 +2131,8 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
 
         if (calleeType is not FunctionType fnType)
         {
-            if (calleeType.Kind == TypeKind.PrimitiveAny)
+            // `any` and the `function` category are callable with an unknown signature → any result.
+            if (calleeType.Kind is TypeKind.PrimitiveAny or TypeKind.PrimitiveFunction)
             {
                 return call.IsOptional ? MakeNullable(pc, pc.Types.PrimAny.ID) : pc.Types.PrimAny.ID;
             }
@@ -2258,7 +2258,7 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
         if (methodFn == null)
         {
             // Fall back to an extension method: it lowers to a plain call `fn(receiver, args)`.
-            var (extFn, extTarget) = ResolveExtensionMethod(objType, mc.MethodName.Name);
+            var (extFn, extTarget) = ResolveExtensionMethod(pc, objType, mc.MethodName.Name);
             if (extFn != null)
             {
                 mc.ExtensionTargetType = extTarget!.ID;
@@ -2826,6 +2826,10 @@ public sealed class InferTypesPass() : Pass(PassName, PassScope.PerBuild)
         if (dst == TypID.Invalid || src == TypID.Invalid) return false;
         var tt = pc.Types;
         if (dst == tt.PrimAny.ID || src == tt.PrimAny.ID) return true;
+
+        // The `function` category accepts any concrete function signature.
+        if (dst == tt.PrimFunction.ID && pc.Pkg!.Types.GetByID(src, out var srcFn) && srcFn is FunctionType)
+            return true;
 
         // Variadic `...T` target: every returned value must be assignable to T. Zero values
         // (a bare `return` → nil source) are allowed. A tuple source checks each element; a

@@ -414,8 +414,8 @@ end
 ## Extension Methods
 
 `extend Type ... end` adds methods to an existing type — a class, an interface, or a built-in
-like `string` or `number` — without touching its original definition. Inside an extension method
-`self` is the receiver.
+like `string`, `number`, `function` or `thread` — without touching its original definition.
+Inside an extension method `self` is the receiver.
 
 ```lux
 extend number

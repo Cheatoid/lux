@@ -1056,6 +1056,9 @@ public sealed class LuxWorkspace
             .Replace("PrimitiveNumber", "number")
             .Replace("PrimitiveBool", "boolean")
             .Replace("PrimitiveString", "string")
+            .Replace("PrimitiveFunction", "function")
+            .Replace("PrimitiveThread", "thread")
+            .Replace("PrimitiveUserdata", "userdata")
             .Replace("PrimitiveNil", "nil")
             .Replace("PrimitiveAny", "any");
     }

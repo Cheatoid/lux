@@ -12,6 +12,9 @@ Lux adds an optional, gradual type system to Lua. All type annotations are compi
 | `nil`     | The nil value          |
 | `any`     | Opt out of type checks |
 | `void`    | No return value        |
+| `function`| Any function           |
+| `thread`  | A coroutine            |
+| `userdata`| Opaque userdata        |
 
 ```lux
 local count: number = 42

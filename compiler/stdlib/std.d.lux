@@ -183,14 +183,14 @@ declare os: OsLib
 -- --- coroutine -------------------------------------------------------------
 
 declare interface CoroutineLib
-    function create(f: any): any
-    function resume(co: any, ...: any): any
+    function create(f: any): thread
+    function resume(co: thread, ...: any): any
     function yield(...: any): any
-    function status(co: any): string
-    function wrap(f: any): any
-    function isyieldable(co: any?): boolean
-    function running(): (any, boolean)
-    function close(co: any): (boolean, any)
+    function status(co: thread): string
+    function wrap(f: any): function
+    function isyieldable(co: thread?): boolean
+    function running(): (thread, boolean)
+    function close(co: thread): (boolean, any)
 end
 
 declare coroutine: CoroutineLib

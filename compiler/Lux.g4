@@ -627,6 +627,7 @@ typeSuffix
 
 typeAtom
     : NIL                                                       # NilType
+    | FUNCTION                                                  # BareFunctionType
     | NAME typeArgList?                                         # NamedType
     | functionType                                              # FuncType
     | tableType                                                 # TableType_

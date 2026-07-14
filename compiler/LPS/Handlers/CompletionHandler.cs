@@ -489,7 +489,7 @@ public sealed class CompletionHandler(LuxWorkspace workspace) : CompletionHandle
                 }
             }
 
-            foreach (var (name, method) in Lux.IR.Type.EnumerateExtensions(classType))
+            foreach (var (name, method) in Lux.IR.Type.EnumerateExtensions(classType, result.Types.PrimFunction))
             {
                 if (name.StartsWith("__")) continue;
                 if (!seen.Add(name)) continue;
@@ -520,7 +520,7 @@ public sealed class CompletionHandler(LuxWorkspace workspace) : CompletionHandle
             // declared on it via `extend number` / `extend string`.
             var extItems = new List<CompletionItem>();
             var extSeen = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var (name, method) in Lux.IR.Type.EnumerateExtensions(finalType))
+            foreach (var (name, method) in Lux.IR.Type.EnumerateExtensions(finalType, result.Types.PrimFunction))
             {
                 if (name.StartsWith("__")) continue;
                 if (!extSeen.Add(name)) continue;

@@ -1663,6 +1663,18 @@ public interface ILuxListener : IParseTreeListener {
 	/// <param name="context">The parse tree.</param>
 	void ExitNilType([NotNull] LuxParser.NilTypeContext context);
 	/// <summary>
+	/// Enter a parse tree produced by the <c>BareFunctionType</c>
+	/// labeled alternative in <see cref="LuxParser.typeAtom"/>.
+	/// </summary>
+	/// <param name="context">The parse tree.</param>
+	void EnterBareFunctionType([NotNull] LuxParser.BareFunctionTypeContext context);
+	/// <summary>
+	/// Exit a parse tree produced by the <c>BareFunctionType</c>
+	/// labeled alternative in <see cref="LuxParser.typeAtom"/>.
+	/// </summary>
+	/// <param name="context">The parse tree.</param>
+	void ExitBareFunctionType([NotNull] LuxParser.BareFunctionTypeContext context);
+	/// <summary>
 	/// Enter a parse tree produced by the <c>NamedType</c>
 	/// labeled alternative in <see cref="LuxParser.typeAtom"/>.
 	/// </summary>
