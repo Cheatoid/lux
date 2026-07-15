@@ -9,3 +9,5 @@ riderModule.iml
 out/
 .test/
 publish-smoke/
+
+docs/internal/
