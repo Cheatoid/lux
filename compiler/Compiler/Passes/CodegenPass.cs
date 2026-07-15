@@ -400,62 +400,64 @@ public sealed class CodegenPass() : Pass(PassName, PassScope.PerBuild, true)
         gen.NewLine();
         gen.Indent();
 
-        var hasSuperCall = hasBase && cd.Constructor != null && HasSuperCall(cd.Constructor.Body);
-        if (hasBase)
+        if (TryCollectCollapsibleInits(cd, hasBase, hasAccessors, out var inits))
         {
-            if (!hasSuperCall)
-            {
-                gen.Write("local self = ");
-                gen.Write(baseName!);
-                gen.Write(".new()");
-                gen.NewLine();
-                gen.WriteSemicolon();
-                // Re-bind self to this (child) class so virtual dispatch resolves
-                // to the subclass's overrides; without this the instance keeps
-                // the base class's metatable and abstract methods stay abstract.
-                gen.Write("setmetatable(self, ");
-                gen.Write(className);
-                gen.Write(")");
-                gen.NewLine();
-                gen.WriteSemicolon();
-            }
+            EmitCollapsedConstructor(ctx, pkg, gen, className, inits);
         }
         else
         {
-            if (hasAccessors)
+            var hasSuperCall = hasBase && cd.Constructor != null && HasSuperCall(cd.Constructor.Body);
+            if (hasBase)
             {
-                var proxyHelper = gen.GetClassProxyHelper();
-                gen.Write("local self = setmetatable({}, ");
-                gen.Write(proxyHelper);
-                gen.Write("(");
-                gen.Write(className);
-                gen.Write(", nil))");
+                if (!hasSuperCall)
+                {
+                    gen.Write("local self = ");
+                    gen.Write(baseName!);
+                    gen.Write(".new()");
+                    gen.NewLine();
+                    gen.WriteSemicolon();
+                    gen.Write("setmetatable(self, ");
+                    gen.Write(className);
+                    gen.Write(")");
+                    gen.NewLine();
+                    gen.WriteSemicolon();
+                }
             }
             else
             {
-                gen.Write("local self = setmetatable({}, ");
-                gen.Write(className);
-                gen.Write(")");
+                if (hasAccessors)
+                {
+                    var proxyHelper = gen.GetClassProxyHelper();
+                    gen.Write("local self = setmetatable({}, ");
+                    gen.Write(proxyHelper);
+                    gen.Write("(");
+                    gen.Write(className);
+                    gen.Write(", nil))");
+                }
+                else
+                {
+                    gen.Write("local self = setmetatable({}, ");
+                    gen.Write(className);
+                    gen.Write(")");
+                }
+                gen.NewLine();
+                gen.WriteSemicolon();
             }
-            gen.NewLine();
+
+            if (!hasSuperCall)
+            {
+                EmitInstanceFieldDefaults(ctx, pkg, gen, cd);
+            }
+
+            if (cd.Constructor != null)
+            {
+                EmitClassConstructorBody(ctx, pkg, gen, cd, cd.Constructor);
+            }
+
+            gen.WriteLine("return self");
             gen.WriteSemicolon();
         }
 
-        // Instance field defaults (only safe to emit here when `self` already exists).
-        // For the hasBase+hasSuperCall case, EmitClassConstructorBody emits them after super().
-        if (!hasSuperCall)
-        {
-            EmitInstanceFieldDefaults(ctx, pkg, gen, cd);
-        }
-
-        // Constructor body
-        if (cd.Constructor != null)
-        {
-            EmitClassConstructorBody(ctx, pkg, gen, cd, cd.Constructor);
-        }
-
-        gen.WriteLine("return self");
-        gen.WriteSemicolon();
         gen.Dedent();
         gen.WriteLine("end");
         gen.WriteSemicolon();
@@ -642,6 +644,103 @@ public sealed class CodegenPass() : Pass(PassName, PassScope.PerBuild, true)
             EmitExpr(ctx, pkg, gen, field.DefaultValue);
             gen.NewLine();
             gen.WriteSemicolon();
+        }
+    }
+
+    /// <summary>
+    /// Determines whether a class's constructor collapses to a single
+    /// <c>return setmetatable({ ... }, Class)</c> — the fast path that creates the instance table
+    /// with a known field set and skips the intermediate <c>self</c> local and metatable writes.
+    /// Only safe when the class has no base class and no accessors, and the field defaults plus the
+    /// constructor body are exactly a straight run of distinct <c>self.field = value</c> assignments
+    /// whose values never read <c>self</c> or capture it in a closure. Returns the ordered field
+    /// initializers via <paramref name="inits"/> when collapsible.
+    /// </summary>
+    private static bool TryCollectCollapsibleInits(ClassDecl cd, bool hasBase, bool hasAccessors, out List<(string Field, Expr Value)> inits)
+    {
+        inits = [];
+        if (hasBase || hasAccessors) return false;
+
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var field in cd.Fields)
+        {
+            if (field.IsLocal || field.IsStatic || field.DefaultValue == null) continue;
+            if (ContainsSelfOrClosure(field.DefaultValue)) return false;
+            if (!seen.Add(field.Name.Name)) return false;
+            inits.Add((field.Name.Name, field.DefaultValue));
+        }
+
+        if (cd.Constructor != null)
+        {
+            if (cd.Constructor.ReturnStmt != null) return false;
+            foreach (var stmt in cd.Constructor.Body)
+            {
+                if (stmt is not AssignStmt { Targets.Count: 1, Values.Count: 1 } asn) return false;
+                if (asn.Targets[0] is not DotAccessExpr { IsOptional: false, Object: NameExpr { Name.Name: "self" } } dot) return false;
+                if (ContainsSelfOrClosure(asn.Values[0])) return false;
+                if (!seen.Add(dot.FieldName.Name)) return false;
+                inits.Add((dot.FieldName.Name, asn.Values[0]));
+            }
+        }
+
+        return true;
+    }
+
+    private void EmitCollapsedConstructor(PassContext ctx, PackageContext pkg, LuaGenerator gen, string className, List<(string Field, Expr Value)> inits)
+    {
+        gen.Write("return setmetatable({");
+        if (inits.Count > 0)
+        {
+            gen.NewLine();
+            gen.Indent();
+            for (var i = 0; i < inits.Count; i++)
+            {
+                gen.Write(inits[i].Field);
+                gen.Write(" = ");
+                EmitExpr(ctx, pkg, gen, inits[i].Value);
+                if (i < inits.Count - 1) gen.Write(",");
+                gen.NewLine();
+            }
+            gen.Dedent();
+        }
+        gen.Write("}, ");
+        gen.Write(className);
+        gen.Write(")");
+        gen.NewLine();
+        gen.WriteSemicolon();
+    }
+
+    /// <summary>
+    /// True when an expression reads <c>self</c> or contains a nested function that might capture
+    /// it — either of which makes the constructor unsafe to collapse into a table literal (where
+    /// <c>self</c> is not yet bound). Unknown expression shapes conservatively return true.
+    /// </summary>
+    private static bool ContainsSelfOrClosure(Expr e)
+    {
+        switch (e)
+        {
+            case null: return false;
+            case NilLiteralExpr or BoolLiteralExpr or NumberLiteralExpr or StringLiteralExpr or VarargExpr: return false;
+            case NameExpr ne: return ne.Name.Name == "self";
+            case ParenExpr p: return ContainsSelfOrClosure(p.Inner);
+            case BinaryExpr b: return ContainsSelfOrClosure(b.Left) || ContainsSelfOrClosure(b.Right);
+            case UnaryExpr u: return ContainsSelfOrClosure(u.Operand);
+            case DotAccessExpr d: return ContainsSelfOrClosure(d.Object);
+            case IndexAccessExpr ix: return ContainsSelfOrClosure(ix.Object) || ContainsSelfOrClosure(ix.Index);
+            case FunctionCallExpr c: return ContainsSelfOrClosure(c.Callee) || c.Arguments.Any(ContainsSelfOrClosure);
+            case MethodCallExpr m: return ContainsSelfOrClosure(m.Object) || m.Arguments.Any(ContainsSelfOrClosure);
+            case NonNilAssertExpr n: return ContainsSelfOrClosure(n.Inner);
+            case IncDecExpr id: return ContainsSelfOrClosure(id.Target);
+            case TypeCheckExpr tc: return ContainsSelfOrClosure(tc.Inner);
+            case TypeCastExpr tc: return ContainsSelfOrClosure(tc.Inner);
+            case TypeOfExpr to: return ContainsSelfOrClosure(to.Inner);
+            case InstanceOfExpr io: return ContainsSelfOrClosure(io.Inner);
+            case AwaitExpr a: return ContainsSelfOrClosure(a.Expression);
+            case NewExpr nw: return nw.Arguments.Any(ContainsSelfOrClosure);
+            case InterpolatedStringExpr istr: return istr.Parts.OfType<InterpExprPart>().Any(pt => ContainsSelfOrClosure(pt.Expression));
+            case TableConstructorExpr tbl: return tbl.Fields.Any(f => ContainsSelfOrClosure(f.Value) || (f.Key != null && ContainsSelfOrClosure(f.Key)));
+            default: return true;
         }
     }
 
