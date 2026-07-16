@@ -4,11 +4,12 @@ using Lux.IR;
 
 namespace Lux.Compiler.Passes;
 
-public sealed class CodegenPass() : Pass(PassName, PassScope.PerBuild, true)
+public sealed partial class CodegenPass() : Pass(PassName, PassScope.PerBuild, true)
 {
     public const string PassName = "CodegenPass";
 
     private int _loopLabelCounter;
+    private int _stmtListDepth;
     private readonly Stack<int> _loopLabelStack = new();
     private readonly Stack<List<DeferStmt>> _deferStack = new();
     private readonly HashSet<int> _neededBreakLabels = [];
@@ -34,6 +35,8 @@ public sealed class CodegenPass() : Pass(PassName, PassScope.PerBuild, true)
     {
         var exportedNames = new List<string>();
         CollectExportNames(ctx, pkg, file.Hir.Body, exportedNames);
+
+        EmitReflectionPrelude(ctx, gen);
 
         // Forward-declare extension functions at the top so calls anywhere in the file resolve,
         // regardless of where the `extend` block appears.
@@ -103,6 +106,7 @@ public sealed class CodegenPass() : Pass(PassName, PassScope.PerBuild, true)
 
     private void EmitStmtList(PassContext ctx, PackageContext pkg, LuaGenerator gen, List<Stmt> stmts)
     {
+        _stmtListDepth++;
         var emitted = new HashSet<int>();
         for (var i = 0; i < stmts.Count; i++)
         {
@@ -132,8 +136,10 @@ public sealed class CodegenPass() : Pass(PassName, PassScope.PerBuild, true)
             }
 
             EmitStmt(ctx, pkg, gen, stmt);
+            if (_stmtListDepth == 1) EmitReflectionFor(ctx, pkg, gen, stmt);
         }
         gen.FlushHoisted();
+        _stmtListDepth--;
     }
 
     private string? GetFunctionDeclName(PassContext ctx, PackageContext pkg, Stmt stmt)

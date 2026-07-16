@@ -107,6 +107,8 @@ public sealed class Config
 
     public TestSection Test { get; set; } = new();
 
+    public ReflectionSection Reflection { get; set; } = new();
+
     /// <summary>
     /// Glob → side-name-list mapping that restricts which symbols (annotated
     /// with <c>@side(...)</c>) each source file may reach. Files outside any
@@ -192,6 +194,7 @@ public sealed class Config
         Install.Merge(config.Install);
         Stdlib.Merge(config.Stdlib);
         Test.Merge(config.Test);
+        Reflection.Merge(config.Reflection);
         foreach (var kv in config.Sides)
             Sides.TryAdd(kv.Key, kv.Value);
         foreach (var kv in config.Dependencies)
@@ -287,6 +290,7 @@ public sealed class Config
             Install = Install,
             Stdlib = Stdlib,
             Test = Test,
+            Reflection = Reflection,
             Sides = new Dictionary<string, List<string>>(Sides, StringComparer.OrdinalIgnoreCase),
             Dependencies = new Dictionary<string, object>(Dependencies),
             DevDependencies = new Dictionary<string, object>(DevDependencies),
