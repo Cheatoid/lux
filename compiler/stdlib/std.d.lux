@@ -300,26 +300,3 @@ declare interface FfiLib
 end
 
 declare ffi: FfiLib
-
--- --- reflect (runtime reflection; requires [reflection] enabled) -------------
-declare interface ReflectLib
-    function Of(value: any): any
-    function get(id: string): any
-    function typeOf(value: any): any
-    function dynamic(value: any): any
-    function all(): any
-    function classes(): any
-    function interfaces(): any
-    function enums(): any
-    function functions(): any
-    function variables(): any
-    function ref(id: string): any
-    function create(info: any, ...: any): any
-    function invoke(info: any, ...: any): any
-    function implementorsOf(id: string): any
-    function annotationsOf(decl: any): any
-    function annotation(decl: any, name: string): any
-    function hasAnnotation(decl: any, name: string): boolean
-end
-
-declare reflect: ReflectLib

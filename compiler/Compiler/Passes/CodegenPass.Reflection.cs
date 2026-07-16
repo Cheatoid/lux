@@ -185,7 +185,7 @@ public sealed partial class CodegenPass
         var id = NamedId(ct);
 
         var parts = new List<string> { $"name = {Quote(ct.Name)}", "kind = \"class\"" };
-        if (ct.IsAbstract) parts.Add("abstract = true");
+        if (ct.IsAbstract) parts.Add("isAbstract = true");
         if (ct.BaseClass != null) parts.Add($"base = {Quote(NamedId(ct.BaseClass))}");
         if (ct.Interfaces.Count > 0)
             parts.Add($"interfaces = {{ {string.Join(", ", ct.Interfaces.Select(NamedId).Select(Quote))} }}");
@@ -204,7 +204,7 @@ public sealed partial class CodegenPass
 
         var parts = new List<string> { $"name = {Quote(it.Name)}", "kind = \"interface\"" };
         if (it.BaseInterfaces.Count > 0)
-            parts.Add($"extends = {{ {string.Join(", ", it.BaseInterfaces.Select(NamedId).Select(Quote))} }}");
+            parts.Add($"bases = {{ {string.Join(", ", it.BaseInterfaces.Select(NamedId).Select(Quote))} }}");
         var fields = it.Fields.Select(kv => $"{{ name = {Quote(kv.Key)}, type = {TypeDesc(ctx, kv.Value.Type)} }}");
         parts.Add($"fields = {{ {string.Join(", ", fields)} }}");
         var methods = it.Methods
@@ -274,7 +274,7 @@ public sealed partial class CodegenPass
             if (!ct.InstanceFields.TryGetValue(f.Name.Name, out var field)) continue;
             var extra = new StringBuilder();
             if (f.DefaultValue != null) extra.Append(", hasDefault = true");
-            if (f.IsProtected) extra.Append(", protected = true");
+            if (f.IsProtected) extra.Append(", isProtected = true");
             var anns = AnnotationsLiteral(f.Annotations);
             if (anns != null) extra.Append($", annotations = {anns}");
             items.Add($"{{ name = {Quote(f.Name.Name)}, type = {TypeDesc(ctx, field.Type)}{extra} }}");
@@ -291,10 +291,10 @@ public sealed partial class CodegenPass
             var fn = ct.Methods.GetValueOrDefault(m.Name.Name) ?? ct.StaticMethods.GetValueOrDefault(m.Name.Name);
             if (fn == null) continue;
             var flags = new StringBuilder();
-            if (m.IsStatic) flags.Append(", static = true");
-            if (m.IsAbstract) flags.Append(", abstract = true");
-            if (m.IsOverride) flags.Append(", override = true");
-            if (m.IsAsync) flags.Append(", async = true");
+            if (m.IsStatic) flags.Append(", isStatic = true");
+            if (m.IsAbstract) flags.Append(", isAbstract = true");
+            if (m.IsOverride) flags.Append(", isOverride = true");
+            if (m.IsAsync) flags.Append(", isAsync = true");
             items.Add(MethodDesc(ctx, m.Name.Name, fn, hasSelf: !m.IsStatic, flags.ToString(), AnnotationsLiteral(m.Annotations)));
         }
         return string.Join(", ", items);

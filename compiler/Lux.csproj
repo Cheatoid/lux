@@ -25,6 +25,7 @@
       <EmbeddedResource Include="stdlib\json.d.lux" />
       <EmbeddedResource Include="stdlib\fs.d.lux" />
       <EmbeddedResource Include="stdlib\console.d.lux" />
+      <EmbeddedResource Include="stdlib\reflect.d.lux" />
       <EmbeddedResource Include="stdlib\project.d.lux" />
       <EmbeddedResource Include="stdlib\test.d.lux" />
       <EmbeddedResource Include="stdlib\test_runtime.lua" />
