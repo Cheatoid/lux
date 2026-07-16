@@ -2181,6 +2181,7 @@ public sealed partial class CodegenPass() : Pass(PassName, PassScope.PerBuild, t
 
     private void EmitFunctionCall(PassContext ctx, PackageContext pkg, LuaGenerator gen, FunctionCallExpr call)
     {
+        if (TryEmitReflectOf(ctx, pkg, gen, call)) return;
         EmitExpr(ctx, pkg, gen, call.Callee);
         gen.Write("(");
         EmitExprList(ctx, pkg, gen, call.Arguments);

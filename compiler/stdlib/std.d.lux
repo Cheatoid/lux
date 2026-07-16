@@ -303,6 +303,7 @@ declare ffi: FfiLib
 
 -- --- reflect (runtime reflection; requires [reflection] enabled) -------------
 declare interface ReflectLib
+    function Of(value: any): any
     function get(id: string): any
     function typeOf(value: any): any
     function dynamic(value: any): any

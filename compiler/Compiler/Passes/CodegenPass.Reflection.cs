@@ -96,6 +96,58 @@ public sealed partial class CodegenPass
         }
     }
 
+    /// <summary>
+    /// Lowers the <c>reflect.Of(x)</c> intrinsic using the static type of <c>x</c>: a class/interface/
+    /// enum (or a bare type name) becomes a constant <c>reflect.get("id")</c>; a primitive/composite
+    /// becomes a constant <c>TypeDesc</c>; an <c>any</c> argument falls back to a runtime
+    /// <c>reflect.dynamic(x)</c> dispatch. Returns false when the call is not <c>reflect.Of</c>.
+    /// </summary>
+    private bool TryEmitReflectOf(PassContext ctx, PackageContext pkg, LuaGenerator gen, FunctionCallExpr call)
+    {
+        if (call.Callee is not DotAccessExpr { Object: NameExpr { Name.Name: "reflect" }, FieldName.Name: "Of" }) return false;
+        if (call.Arguments.Count != 1) return false;
+        var arg = call.Arguments[0];
+
+        if (arg is NameExpr ne && ne.Name.Sym != SymID.Invalid && pkg.Syms.GetByID(ne.Name.Sym, out var sym)
+            && sym.Kind is SymbolKind.Class or SymbolKind.Interface or SymbolKind.Enum
+            && ctx.Types.GetByID(sym.Type, out var namedByName) && NamedTypeName(namedByName) is { } byName)
+        {
+            gen.Write($"reflect.get({Quote(ReflectId(ctx, byName))})");
+            return true;
+        }
+
+        if (arg.Type != TypID.Invalid && ctx.Types.GetByID(arg.Type, out var t))
+        {
+            if (NamedTypeName(t) is { } named)
+            {
+                gen.Write($"reflect.get({Quote(ReflectId(ctx, named))})");
+                return true;
+            }
+            if (t.Kind == TypeKind.PrimitiveAny)
+            {
+                gen.Write("reflect.dynamic(");
+                EmitExpr(ctx, pkg, gen, arg);
+                gen.Write(")");
+                return true;
+            }
+            gen.Write($"({TypeDesc(ctx, t)})");
+            return true;
+        }
+
+        gen.Write("reflect.dynamic(");
+        EmitExpr(ctx, pkg, gen, arg);
+        gen.Write(")");
+        return true;
+    }
+
+    private static string? NamedTypeName(Type t) => t switch
+    {
+        ClassType c => c.Name,
+        InterfaceType i => i.Name,
+        EnumType e => e.Name,
+        _ => null
+    };
+
     private static void WriteBlock(LuaGenerator gen, string? block)
     {
         if (string.IsNullOrEmpty(block)) return;
