@@ -366,6 +366,25 @@ silently restrict anything until you start emitting `@side` annotations.
 
 See [Sides](24-sides.md) for the full mental model and annotation syntax.
 
+## `[reflection]` &mdash; runtime type metadata
+
+```toml
+[reflection]
+mode = "all"        # "all" (default) | "annotated" | "none"
+```
+
+Controls how much runtime reflection metadata the compiler emits into the output
+(the global `_G.__lux_reflect` registry read by the `reflect` library).
+
+| `mode` | Emits |
+| --- | --- |
+| `all` | Descriptors for every class, interface, enum, top-level function and variable. **Default.** |
+| `annotated` | Only declarations marked `@reflectable`. |
+| `none` | Nothing &mdash; strips the registry and reader library entirely. |
+
+`all` is the default; `annotated` and `none` are opt-in size/overhead
+optimizations. See [Reflection](26-reflection.md) for the full API.
+
 ## Full example
 
 ```toml
