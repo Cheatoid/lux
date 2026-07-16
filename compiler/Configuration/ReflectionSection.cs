@@ -7,11 +7,12 @@ namespace Lux.Configuration;
 /// </summary>
 public sealed class ReflectionSection
 {
-    /// <summary>How much metadata to emit. See <see cref="ReflectionMode"/>.</summary>
-    public ReflectionMode Mode { get; set; } = ReflectionMode.None;
+    /// <summary>How much metadata to emit. See <see cref="ReflectionMode"/>. Defaults to
+    /// <see cref="ReflectionMode.All"/>; <c>none</c> and <c>annotated</c> are opt-in optimizations.</summary>
+    public ReflectionMode Mode { get; set; } = ReflectionMode.All;
 
     internal void Merge(ReflectionSection section)
     {
-        Mode = Config.MergeVal(Mode, section.Mode, ReflectionMode.None);
+        Mode = Config.MergeVal(Mode, section.Mode, ReflectionMode.All);
     }
 }

@@ -73,6 +73,13 @@ public class Type(TypeKind kind)
     public Dictionary<string, ExtensionMethodNode> ExtensionMethodNodes { get; } = new();
 
     /// <summary>
+    /// The stable reflection id (<c>package::Name</c>) for a named type (class/interface/enum),
+    /// assigned once at type creation using its defining package's namespace. Both the metadata
+    /// emission and cross-references read this so ids stay consistent across files and packages.
+    /// </summary>
+    public string? ReflectionId { get; set; }
+
+    /// <summary>
     /// Resolves an extension method named <paramref name="name"/> visible on
     /// <paramref name="objType"/> — checking the type itself, its base classes, and its
     /// implemented/extended interfaces. Returns the self-prefixed signature and the type the

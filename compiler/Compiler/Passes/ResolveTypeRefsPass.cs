@@ -57,6 +57,18 @@ public class ResolveTypeRefsPass() : Pass(PassName, PassScope.PerBuild)
     }
 
     /// <summary>
+    /// The reflection namespace for a package: the root project uses its configured name; every other
+    /// package (dependency) uses its directory leaf, so same-named types across packages get distinct ids.
+    /// </summary>
+    private string ReflectNamespace(PackageContext pkg)
+    {
+        var leaf = System.IO.Path.GetFileNameWithoutExtension(pkg.Path.TrimEnd('/', '\\'));
+        var isRoot = ReferenceEquals(pkg, _ctx.Pkgs.FirstOrDefault());
+        return isRoot ? _ctx.Config.Name ?? (string.IsNullOrEmpty(leaf) ? "main" : leaf)
+                      : string.IsNullOrEmpty(leaf) ? "main" : leaf;
+    }
+
+    /// <summary>
     /// Pre-pass: walk top-level statements and create the EnumType for every EnumDecl so that NamedTypeRefs
     /// referring to enums can be resolved later regardless of declaration order.
     /// </summary>
@@ -109,6 +121,7 @@ public class ResolveTypeRefsPass() : Pass(PassName, PassScope.PerBuild)
         if (sym.Type != TypID.Invalid) return;
 
         var classType = pkg.Types.ClassOf(decl.Name.Name, isAbstract: decl.IsAbstract);
+        classType.ReflectionId = $"{ReflectNamespace(pkg)}::{decl.Name.Name}";
         pkg.Syms.SetType(decl.Name.Sym, classType.ID);
         MaterializeTypeParams(pkg, decl.TypeParams, $"class:{decl.Name.Name}", classType.TypeParams, ScopeOfDecl(decl.ID));
     }
@@ -120,6 +133,7 @@ public class ResolveTypeRefsPass() : Pass(PassName, PassScope.PerBuild)
         if (sym.Type != TypID.Invalid) return;
 
         var interfaceType = pkg.Types.InterfaceOf(decl.Name.Name);
+        interfaceType.ReflectionId = $"{ReflectNamespace(pkg)}::{decl.Name.Name}";
         pkg.Syms.SetType(decl.Name.Sym, interfaceType.ID);
         MaterializeTypeParams(pkg, decl.TypeParams, $"iface:{decl.Name.Name}", interfaceType.TypeParams, ScopeOfDecl(decl.ID));
     }
@@ -209,6 +223,7 @@ public class ResolveTypeRefsPass() : Pass(PassName, PassScope.PerBuild)
         }
 
         var enumType = pkg.Types.EnumOf(decl.Name.Name, members, baseType);
+        enumType.ReflectionId = $"{ReflectNamespace(pkg)}::{decl.Name.Name}";
         pkg.Syms.SetType(decl.Name.Sym, enumType.ID);
     }
     

@@ -110,17 +110,17 @@ public sealed partial class CodegenPass
 
         if (arg is NameExpr ne && ne.Name.Sym != SymID.Invalid && pkg.Syms.GetByID(ne.Name.Sym, out var sym)
             && sym.Kind is SymbolKind.Class or SymbolKind.Interface or SymbolKind.Enum
-            && ctx.Types.GetByID(sym.Type, out var namedByName) && NamedTypeName(namedByName) is { } byName)
+            && ctx.Types.GetByID(sym.Type, out var namedByName) && NamedTypeName(namedByName) != null)
         {
-            gen.Write($"reflect.get({Quote(ReflectId(ctx, byName))})");
+            gen.Write($"reflect.get({Quote(NamedId(namedByName))})");
             return true;
         }
 
         if (arg.Type != TypID.Invalid && ctx.Types.GetByID(arg.Type, out var t))
         {
-            if (NamedTypeName(t) is { } named)
+            if (NamedTypeName(t) != null)
             {
-                gen.Write($"reflect.get({Quote(ReflectId(ctx, named))})");
+                gen.Write($"reflect.get({Quote(NamedId(t))})");
                 return true;
             }
             if (t.Kind == TypeKind.PrimitiveAny)
@@ -163,19 +163,32 @@ public sealed partial class CodegenPass
             _ => false
         };
 
-    private string ReflectId(PassContext ctx, string name) => $"{ctx.Config.Name ?? "main"}::{name}";
+    /// <summary>Id for a declaration defined in the file currently being emitted (function/variable).</summary>
+    private string ReflectId(PassContext ctx, string name) => $"{_reflectNamespace}::{name}";
+
+    /// <summary>Id for a named type, from its stored <see cref="Type.ReflectionId"/> (defining-package aware).</summary>
+    private string NamedId(Type t) => t.ReflectionId ?? $"{_reflectNamespace}::{NamedTypeName(t) ?? "?"}";
+
+    /// <summary>The reflection namespace for a package (root uses its config name, deps their dir leaf).</summary>
+    private static string ReflectNamespace(PassContext ctx, PackageContext pkg)
+    {
+        var leaf = System.IO.Path.GetFileNameWithoutExtension(pkg.Path.TrimEnd('/', '\\'));
+        var isRoot = ReferenceEquals(pkg, ctx.Pkgs.FirstOrDefault());
+        return isRoot ? ctx.Config.Name ?? (string.IsNullOrEmpty(leaf) ? "main" : leaf)
+                      : string.IsNullOrEmpty(leaf) ? "main" : leaf;
+    }
 
     private string? ClassMeta(PassContext ctx, PackageContext pkg, ClassDecl cd)
     {
         if (!TryResolveType<ClassType>(ctx, pkg, cd.Name, out var ct)) return null;
         var runtime = ResolveName(ctx, pkg, cd.Name);
-        var id = ReflectId(ctx, ct.Name);
+        var id = NamedId(ct);
 
         var parts = new List<string> { $"name = {Quote(ct.Name)}", "kind = \"class\"" };
         if (ct.IsAbstract) parts.Add("abstract = true");
-        if (ct.BaseClass != null) parts.Add($"base = {Quote(ReflectId(ctx, ct.BaseClass.Name))}");
+        if (ct.BaseClass != null) parts.Add($"base = {Quote(NamedId(ct.BaseClass))}");
         if (ct.Interfaces.Count > 0)
-            parts.Add($"interfaces = {{ {string.Join(", ", ct.Interfaces.Select(i => Quote(ReflectId(ctx, i.Name))))} }}");
+            parts.Add($"interfaces = {{ {string.Join(", ", ct.Interfaces.Select(NamedId).Select(Quote))} }}");
         parts.Add($"fields = {{ {FieldsList(ctx, cd.Fields, ct)} }}");
         parts.Add($"methods = {{ {MethodsList(ctx, cd.Methods, ct)} }}");
         var anns = AnnotationsLiteral(cd.Annotations);
@@ -191,7 +204,7 @@ public sealed partial class CodegenPass
 
         var parts = new List<string> { $"name = {Quote(it.Name)}", "kind = \"interface\"" };
         if (it.BaseInterfaces.Count > 0)
-            parts.Add($"extends = {{ {string.Join(", ", it.BaseInterfaces.Select(b => Quote(ReflectId(ctx, b.Name))))} }}");
+            parts.Add($"extends = {{ {string.Join(", ", it.BaseInterfaces.Select(NamedId).Select(Quote))} }}");
         var fields = it.Fields.Select(kv => $"{{ name = {Quote(kv.Key)}, type = {TypeDesc(ctx, kv.Value.Type)} }}");
         parts.Add($"fields = {{ {string.Join(", ", fields)} }}");
         var methods = it.Methods
@@ -201,14 +214,14 @@ public sealed partial class CodegenPass
         var anns = AnnotationsLiteral(id.Annotations);
         if (anns != null) parts.Add($"annotations = {anns}");
 
-        return $"__lux[{Quote(ReflectId(ctx, it.Name))}] = {{ {string.Join(", ", parts)} }};";
+        return $"__lux[{Quote(NamedId(it))}] = {{ {string.Join(", ", parts)} }};";
     }
 
     private string? EnumMeta(PassContext ctx, PackageContext pkg, EnumDecl ed)
     {
         if (!TryResolveType<EnumType>(ctx, pkg, ed.Name, out var et)) return null;
         var runtime = ResolveName(ctx, pkg, ed.Name);
-        var id = ReflectId(ctx, et.Name);
+        var id = NamedId(et);
 
         var members = et.Members.Select(m => $"{{ name = {Quote(m.Name)}, value = {EnumValueLiteral(m.Value)} }}");
         var parts = new List<string>
@@ -314,9 +327,9 @@ public sealed partial class CodegenPass
         VariadicType v => $"{{ kind = \"variadic\", element = {TypeDesc(ctx, v.ElementType)} }}",
         TupleType tup => $"{{ kind = \"tuple\", elements = {{ {string.Join(", ", tup.Fields.Select(f => TypeDesc(ctx, f.Type)))} }} }}",
         FunctionType fn => $"{{ kind = \"function\", params = {{ {string.Join(", ", fn.ParamTypes.Select(p => TypeDesc(ctx, p)))} }}, returns = {TypeDesc(ctx, fn.ReturnType)} }}",
-        ClassType c => $"{{ kind = \"named\", id = {Quote(ReflectId(ctx, c.Name))} }}",
-        InterfaceType i => $"{{ kind = \"named\", id = {Quote(ReflectId(ctx, i.Name))} }}",
-        EnumType e => $"{{ kind = \"named\", id = {Quote(ReflectId(ctx, e.Name))} }}",
+        ClassType c => $"{{ kind = \"named\", id = {Quote(NamedId(c))} }}",
+        InterfaceType i => $"{{ kind = \"named\", id = {Quote(NamedId(i))} }}",
+        EnumType e => $"{{ kind = \"named\", id = {Quote(NamedId(e))} }}",
         _ => $"{{ kind = \"primitive\", name = {Quote(PrimitiveName(t.Kind))} }}"
     };
 

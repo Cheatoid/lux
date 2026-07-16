@@ -10,6 +10,7 @@ public sealed partial class CodegenPass() : Pass(PassName, PassScope.PerBuild, t
 
     private int _loopLabelCounter;
     private int _stmtListDepth;
+    private string _reflectNamespace = "main";
     private readonly Stack<int> _loopLabelStack = new();
     private readonly Stack<List<DeferStmt>> _deferStack = new();
     private readonly HashSet<int> _neededBreakLabels = [];
@@ -36,6 +37,7 @@ public sealed partial class CodegenPass() : Pass(PassName, PassScope.PerBuild, t
         var exportedNames = new List<string>();
         CollectExportNames(ctx, pkg, file.Hir.Body, exportedNames);
 
+        _reflectNamespace = ReflectNamespace(ctx, pkg);
         EmitReflectionPrelude(ctx, gen);
 
         // Forward-declare extension functions at the top so calls anywhere in the file resolve,
